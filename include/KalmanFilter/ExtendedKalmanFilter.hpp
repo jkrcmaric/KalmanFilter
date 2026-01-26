@@ -78,7 +78,7 @@ private:
         this->x_ = model_.fx(this->x_);
     }
 
-    void computeInnovation(MeasureVector& z, MeasureVector& y) {
+    void computeInnovation(const MeasureVector& z, MeasureVector& y) {
         if (autoJacobianH_) {
             computeJacobian<MatrixH, MeasureVector>(this->x_, model_.H, model_.hx);
         } else if (model_.jacob_h) {
