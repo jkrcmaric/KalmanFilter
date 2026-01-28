@@ -33,8 +33,8 @@ public:
         const EKFSystemModel& model,
         const StateMatrix& P)
         : Base(x, P), model_{model} {
-            if (model_.jacob_f) setAutomaticJacobianF(false);
-            if (model_.jacob_h) setAutomaticJacobianH(false);
+            setAutomaticJacobianF(!model_.jacob_f);
+            setAutomaticJacobianH(!model_.jacob_h);
         }
 
     // Allow tuning numerical differentiation step size per dimension
@@ -47,8 +47,8 @@ public:
     void setModel(const EKFSystemModel& model) { 
         model_ = model; 
 
-        if (model_.jacob_f) setAutomaticJacobianF(false);
-        if (model_.jacob_h) setAutomaticJacobianH(false);
+        setAutomaticJacobianF(!model_.jacob_f);
+        setAutomaticJacobianH(!model_.jacob_h);
     }
     void setTransitionFunction(const std::function<StateVector(const StateVector&)>& fx) { model_.fx = fx; }
     void setMeasurementFunction(const std::function<MeasureVector(const StateVector&)>& hx) { model_.hx = hx; }
@@ -78,7 +78,7 @@ private:
         this->x_ = model_.fx(this->x_);
     }
 
-    void computeInnovation(MeasureVector& z, MeasureVector& y) {
+    void computeInnovation(const MeasureVector& z, MeasureVector& y) {
         if (autoJacobianH_) {
             computeJacobian<MatrixH, MeasureVector>(this->x_, model_.H, model_.hx);
         } else if (model_.jacob_h) {
