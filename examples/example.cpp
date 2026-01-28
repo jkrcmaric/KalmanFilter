@@ -126,7 +126,8 @@ int main() {
                           NOISE_ELEV*NOISE_ELEV;
 
     // --- Initialization ---
-    std::mt19937 gen(42);
+    std::random_device rd;
+    std::mt19937 gen(rd());
     std::normal_distribution<> d(0, 1);
     
     // Get initial truth to set starting state

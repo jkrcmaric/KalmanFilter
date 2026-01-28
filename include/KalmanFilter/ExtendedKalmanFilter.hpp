@@ -38,7 +38,8 @@ public:
         }
 
     // Allow tuning numerical differentiation step size per dimension
-    void setEpsilon(int index, double value) { EPSILON_.at(index) = value; }
+    void setEpsilon(int index, double value) { this->EPSILON_.at(index) = value; }
+    const std::vector<double>& getEpsilon() const { return this->EPSILON_; }
 
     // Set whether automatic Jacobian is automatically computed via numerical differentiaiton
     void setAutomaticJacobianF(bool value) { autoJacobianF_ = value; }
@@ -63,14 +64,13 @@ public:
     }
 
 private:
-    std::vector<double> EPSILON_{std::vector<double>(StateDim, 1e-6)}; // for numerical differentiation
     bool autoJacobianF_{true};
     bool autoJacobianH_{true};
     EKFSystemModel model_;
 
     void computePrediction() {
         if (autoJacobianF_ ) {
-            computeJacobian<StateMatrix, StateVector>(this->x_, model_.F, model_.fx);
+            this->template computeJacobian<StateMatrix, StateVector>(this->x_, model_.F, model_.fx);
         } else if (model_.jacob_f) {
             model_.F = model_.jacob_f(this->x_);
         }
@@ -80,32 +80,11 @@ private:
 
     void computeInnovation(const MeasureVector& z, MeasureVector& y) {
         if (autoJacobianH_) {
-            computeJacobian<MatrixH, MeasureVector>(this->x_, model_.H, model_.hx);
+            this->template computeJacobian<MatrixH, MeasureVector>(this->x_, model_.H, model_.hx);
         } else if (model_.jacob_h) {
             model_.H = model_.jacob_h(this->x_);
         }
         y = z - model_.hx(this->x_);
-    }
-
-    // compute Jacobian via numerical differentiation
-    template <typename T1, typename T2>
-    void computeJacobian(const StateVector& x, T1& J, const std::function<T2(const StateVector&)>& fx) {
-        StateVector x_temp{x};
-        T2 y_plus{};
-        T2 y_minus{};
-
-        for (int i{0}; i < StateDim; ++i) {
-            double original_value{x(i)};
-
-            x_temp(i) = original_value + EPSILON_.at(i);
-            y_plus = fx(x_temp);
-
-            x_temp(i) = original_value - EPSILON_.at(i);
-            y_minus = fx(x_temp);
-
-            x_temp(i) = original_value;
-            J.col(i) = (y_plus - y_minus) / (2*EPSILON_.at(i));
-        }
     }
 };
 

@@ -1,6 +1,7 @@
 #ifndef KALMAN_FILTER_H
 #define KALMAN_FILTER_H
 
+#include <iostream>
 #include <functional>
 #include <vector>
 #include <cmath>
@@ -70,6 +71,7 @@ protected:
     StateMatrix I_{StateMatrix::Identity()};
     std::vector<int> state_angle_flag_{std::vector<int>(StateDim, 0)};
     std::vector<int> measurement_angle_flag_{std::vector<int>(MeasureDim, 0)};
+    std::vector<double> EPSILON_{std::vector<double>(StateDim, 1e-6)}; // for numerical differentiation
 
     // Constructors
     KalmanFilter() = default;
@@ -86,6 +88,28 @@ protected:
     void normalizeAngles(T& y, const std::vector<int>& angle_flag) {
         for (int i{0}; i < angle_flag.size(); ++i) {
             if (angle_flag[i]) y(i) = std::remainder(y(i), 2.0*M_PI);
+        }
+    }
+
+    // compute Jacobian via numerical differentiation
+    template <typename T1, typename T2>
+    void computeJacobian(const StateVector& x, T1& J, const std::function<T2(const StateVector&)>& fx) {
+        StateVector x_temp{x};
+        T2 y_plus{};
+        T2 y_minus{};
+
+        for (int i{0}; i < StateDim; ++i) {
+            double original_value{x(i)};
+            double epsilon{EPSILON_.at(i)};
+
+            x_temp(i) = original_value + epsilon;
+            y_plus = fx(x_temp);
+
+            x_temp(i) = original_value - epsilon;
+            y_minus = fx(x_temp);
+
+            x_temp(i) = original_value;
+            J.col(i) = (y_plus - y_minus) / (2*epsilon);
         }
     }
 };

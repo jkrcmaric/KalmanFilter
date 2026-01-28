@@ -14,7 +14,7 @@ public:
     using typename Base::MeasureVector;
     using typename Base::StateMatrix;
 
-    struct LKFSystemModel : Base::SystemModel {};
+    using LKFSystemModel = typename Base::SystemModel;
 
     LinearKalmanFilter(
         const StateVector& x, 
