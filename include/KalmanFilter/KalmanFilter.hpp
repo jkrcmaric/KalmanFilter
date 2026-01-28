@@ -11,6 +11,8 @@
 template <typename KalmanFilterType, int StateDim, int MeasureDim>
 class KalmanFilter {
 public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // Ensures 'new' allocates aligned memory
+
     using StateVector = Eigen::Matrix<double, StateDim, 1>;
     using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
     using StateMatrix = Eigen::Matrix<double, StateDim, StateDim>;
@@ -59,8 +61,8 @@ public:
     void setR(const MeasureMatrix& R) { kf().model_.R = R; }
     void setP(const StateMatrix& P) { P_ = P; }
 
-    StateVector getState() const { return x_; }
-    StateMatrix getCov() const { return P_; }
+    const StateVector& getState() const { return x_; }
+    const StateMatrix& getCov() const { return P_; }
 
 protected:
     StateVector x_{StateVector::Zero()};
