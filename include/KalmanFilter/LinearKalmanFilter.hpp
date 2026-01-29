@@ -38,13 +38,17 @@ private:
 
     void computePrediction() {
         this->x_ = model_.F * this->x_;
-        this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+        if (this->has_state_angle_) {
+            this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+        }
         this->P_ = model_.F * this->P_ * model_.F.transpose() + model_.Q;
     }
 
     void computeUpdate(const MeasureVector& z) {
         MeasureVector y = z - model_.H * this->x_;
-        this->template normalizeAngles<MeasureVector>(y, this->measurement_angle_flag_);
+        if (this->has_measurement_angle_) {
+            this->template normalizeAngles<MeasureVector>(y, this->measurement_angle_flag_);
+        }
         MeasureMatrix S = model_.H * this->P_ * model_.H.transpose() + model_.R;
         MatrixK K = this->P_ * model_.H.transpose() * S.ldlt().solve(MeasureMatrix::Identity());
         this->x_ = this->x_ + K * y;

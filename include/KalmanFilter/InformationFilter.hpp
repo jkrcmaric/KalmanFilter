@@ -79,9 +79,12 @@ private:
     }
 
     Information getInformationContribution(const MeasureVector& z) {
-        MeasureVector innovation = z - model_.H * this->x_;
-        this->template normalizeAngles<MeasureVector>(innovation, this->measurement_angle_flag_);
-        MeasureVector zeta = innovation + model_.H * this->x_;
+        MeasureVector zeta = z;
+        if (this->has_measurement_angle_) {
+            MeasureVector innovation = zeta - model_.H * this->x_;
+            this->template normalizeAngles<MeasureVector>(innovation, this->measurement_angle_flag_);
+            zeta = innovation + model_.H * this->x_;
+        }
 
         StateMatrix I = model_.H.transpose() * Rinv_ * model_.H;
         StateVector i = model_.H.transpose() * Rinv_ * zeta;
@@ -93,9 +96,10 @@ private:
         this->P_ = Y_.inverse();
         this->x_ = this->P_ * y_;
 
-        this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
-
-        y_ = Y_ * this->x_;
+        if (this->has_state_angle_) {
+            this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+            y_ = Y_ * this->x_;
+        }
     }
 };
 

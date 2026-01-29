@@ -7,7 +7,7 @@
 
 // --- Simulation Constants ---
 const double DT           = 0.1;
-const double SIM_DURATION = 600.0; 
+const double SIM_DURATION = 60.0; 
 
 // Physics (Target Motion)
 const double RADIAL_SPEED = 20.0; 

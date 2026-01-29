@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <cmath>
+#include <algorithm>
 
 #include <eigen3/Eigen/Dense>
 
@@ -39,10 +40,16 @@ public:
     }
 
     // Mark state index as an angle
-    void setStateAsAngle(int index, bool value = true) { state_angle_flag_.at(index) = value; }
+    void setStateAsAngle(int index, bool value = true) { 
+        state_angle_flag_.at(index) = value;
+        checkAngleFlags(state_angle_flag_, has_state_angle_);
+    }
 
     // Mark measurment index as an angle
-    void setMeasurementAsAngle(int index, bool value = true) { measurement_angle_flag_.at(index) = value; }
+    void setMeasurementAsAngle(int index, bool value = true) { 
+        measurement_angle_flag_.at(index) = value;
+        checkAngleFlags(measurement_angle_flag_, has_measurement_angle_);
+    }
 
     void setState(const StateVector& x) { x_ = x; }
     void setP(const StateMatrix& P) { P_ = P; }
@@ -55,6 +62,8 @@ protected:
     StateMatrix P_{StateMatrix::Identity()};
     std::vector<int> state_angle_flag_{std::vector<int>(StateDim, 0)};
     std::vector<int> measurement_angle_flag_{std::vector<int>(MeasureDim, 0)};
+    bool has_state_angle_{false};
+    bool has_measurement_angle_{false};
     std::vector<double> EPSILON_{std::vector<double>(StateDim, 1e-6)}; // for numerical differentiation
 
     // Constructors
@@ -75,6 +84,16 @@ protected:
     void normalizeAngles(T& y, const std::vector<int>& angle_flag) {
         for (int i{0}; i < angle_flag.size(); ++i) {
             if (angle_flag[i]) y(i) = std::remainder(y(i), 2.0*M_PI);
+        }
+    }
+
+    void checkAngleFlags(std::vector<int>& angle_flag, bool& has_angle) {
+        auto is_non_zero = [](int i) { return i != 0; };
+
+        if (std::any_of(angle_flag.begin(), angle_flag.end(), is_non_zero)) {
+            has_angle = true;
+        } else {
+            has_angle = false;
         }
     }
 
