@@ -16,7 +16,9 @@ public:
     using typename Base::StateVector;
     using typename Base::MeasureVector;
     using typename Base::StateMatrix;
+    using typename Base::MeasureMatrix;
     using typename Base::MatrixH;
+    using typename Base::MatrixK;
 
     struct EKFSystemModel : Base::SystemModel {
         std::function<StateVector(const StateVector&)> fx;
@@ -51,6 +53,12 @@ public:
         setAutomaticJacobianF(!model_.jacob_f);
         setAutomaticJacobianH(!model_.jacob_h);
     }
+
+    void setF(const StateMatrix& F) { model_.F = F; }
+    void setH(const MatrixH& H) { model_.H = H; }
+    void setQ(const StateMatrix& Q) { model_.Q = Q; }
+    void setR(const MeasureMatrix& R) { model_.R = R; }
+
     void setTransitionFunction(const std::function<StateVector(const StateVector&)>& fx) { model_.fx = fx; }
     void setMeasurementFunction(const std::function<MeasureVector(const StateVector&)>& hx) { model_.hx = hx; }
 
@@ -64,6 +72,7 @@ public:
     }
 
 private:
+    StateMatrix I_{StateMatrix::Identity()};
     bool autoJacobianF_{true};
     bool autoJacobianH_{true};
     EKFSystemModel model_;
@@ -76,15 +85,22 @@ private:
         }
 
         this->x_ = model_.fx(this->x_);
+        this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+        this->P_ = model_.F * this->P_ * model_.F.transpose() + model_.Q;
     }
 
-    void computeInnovation(const MeasureVector& z, MeasureVector& y) {
+    void computeUpdate(const MeasureVector& z) {
         if (autoJacobianH_) {
             this->template computeJacobian<MatrixH, MeasureVector>(this->x_, model_.H, model_.hx);
         } else if (model_.jacob_h) {
             model_.H = model_.jacob_h(this->x_);
         }
-        y = z - model_.hx(this->x_);
+        MeasureVector y = z - model_.hx(this->x_);
+        this->template normalizeAngles<MeasureVector>(y, this->measurement_angle_flag_);
+        MeasureMatrix S = model_.H * this->P_ * model_.H.transpose() + model_.R;
+        MatrixK K = this->P_ * model_.H.transpose() * S.ldlt().solve(MeasureMatrix::Identity());
+        this->x_ = this->x_ + K * y;
+        this->P_ = (I_ - K*model_.H) * this->P_ * (I_ - K*model_.H).transpose() + K*model_.R*K.transpose();
     }
 };
 

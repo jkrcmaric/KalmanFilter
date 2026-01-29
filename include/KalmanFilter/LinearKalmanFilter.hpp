@@ -13,6 +13,9 @@ public:
     using typename Base::StateVector;
     using typename Base::MeasureVector;
     using typename Base::StateMatrix;
+    using typename Base::MeasureMatrix;
+    using typename Base::MatrixH;
+    using typename Base::MatrixK;
 
     using LKFSystemModel = typename Base::SystemModel;
 
@@ -24,15 +27,28 @@ public:
 
     void setModel(const LKFSystemModel& model) { model_ = model; }
 
+    void setF(const StateMatrix& F) { model_.F = F; }
+    void setH(const MatrixH& H) { model_.H = H; }
+    void setQ(const StateMatrix& Q) { model_.Q = Q; }
+    void setR(const MeasureMatrix& R) { model_.R = R; }
+
 private:
+    StateMatrix I_{StateMatrix::Identity()};
     LKFSystemModel model_;
 
     void computePrediction() {
         this->x_ = model_.F * this->x_;
+        this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+        this->P_ = model_.F * this->P_ * model_.F.transpose() + model_.Q;
     }
 
-    void computeInnovation(MeasureVector& z, MeasureVector& y) {
-        y = z - model_.H * this->x_;
+    void computeUpdate(const MeasureVector& z) {
+        MeasureVector y = z - model_.H * this->x_;
+        this->template normalizeAngles<MeasureVector>(y, this->measurement_angle_flag_);
+        MeasureMatrix S = model_.H * this->P_ * model_.H.transpose() + model_.R;
+        MatrixK K = this->P_ * model_.H.transpose() * S.ldlt().solve(MeasureMatrix::Identity());
+        this->x_ = this->x_ + K * y;
+        this->P_ = (I_ - K*model_.H) * this->P_ * (I_ - K*model_.H).transpose() + K*model_.R*K.transpose();
     }
 };
 
