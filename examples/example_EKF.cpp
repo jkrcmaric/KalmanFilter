@@ -84,7 +84,7 @@ Eigen::Vector3d sphericalToCartesian(const StateVector& x_sph) {
 }
 
 int main() {
-    EKF::EKFSystemModel model;
+    EKF::SystemModel model;
 
     // --- 1. SPHERICAL PROCESS MODEL ---
     // Simple kinematic update on spherical states

@@ -21,11 +21,14 @@ public:
     using MatrixH = Eigen::Matrix<double, MeasureDim, StateDim>;
     using MatrixK = Eigen::Matrix<double, StateDim, MeasureDim>;
 
-    struct SystemModel {
+    struct BaseModel {
         StateMatrix F{StateMatrix::Identity()};
         MatrixH H{MatrixH::Zero()};
         StateMatrix Q{StateMatrix::Zero()};
         MeasureMatrix R{MeasureMatrix::Identity()};
+
+    protected:
+        ~BaseModel() = default;
     };
 
     // Perform prediction step

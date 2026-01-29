@@ -21,7 +21,7 @@ using MeasureVector = LKF::MeasureVector;
 
 int main() {
     // 1. Configure the Linear System Model
-    LKF::LKFSystemModel model;
+    LKF::SystemModel model;
 
     // A. Transition Matrix (F)
     // x_new = x + v*dt

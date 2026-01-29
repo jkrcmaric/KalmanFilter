@@ -20,7 +20,7 @@ public:
     using typename Base::MatrixH;
     using typename Base::MatrixK;
 
-    struct EKFSystemModel : Base::SystemModel {
+    struct SystemModel : Base::BaseModel {
         std::function<StateVector(const StateVector&)> fx;
         std::function<MeasureVector(const StateVector&)> hx;
 
@@ -32,7 +32,7 @@ public:
     // Constructors
     ExtendedKalmanFilter(
         const StateVector& x, 
-        const EKFSystemModel& model,
+        const SystemModel& model,
         const StateMatrix& P)
         : Base(x, P), model_{model} {
             setAutomaticJacobianF(!model_.jacob_f);
@@ -47,7 +47,7 @@ public:
     void setAutomaticJacobianF(bool value) { autoJacobianF_ = value; }
     void setAutomaticJacobianH(bool value) { autoJacobianH_ = value; }
 
-    void setModel(const EKFSystemModel& model) { 
+    void setModel(const SystemModel& model) { 
         model_ = model; 
 
         setAutomaticJacobianF(!model_.jacob_f);
@@ -75,7 +75,7 @@ private:
     StateMatrix I_{StateMatrix::Identity()};
     bool autoJacobianF_{true};
     bool autoJacobianH_{true};
-    EKFSystemModel model_;
+    SystemModel model_;
 
     void computePrediction() {
         if (autoJacobianF_ ) {

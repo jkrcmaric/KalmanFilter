@@ -17,15 +17,15 @@ public:
     using typename Base::MatrixH;
     using typename Base::MatrixK;
 
-    using LKFSystemModel = typename Base::SystemModel;
+    struct SystemModel : public Base::BaseModel {};
 
     LinearKalmanFilter(
         const StateVector& x, 
-        const LKFSystemModel& model, 
+        const SystemModel& model, 
         const StateMatrix& P)
         : Base(x, P), model_{model} {}
 
-    void setModel(const LKFSystemModel& model) { model_ = model; }
+    void setModel(const SystemModel& model) { model_ = model; }
 
     void setF(const StateMatrix& F) { model_.F = F; }
     void setH(const MatrixH& H) { model_.H = H; }
@@ -34,7 +34,7 @@ public:
 
 private:
     StateMatrix I_{StateMatrix::Identity()};
-    LKFSystemModel model_;
+    SystemModel model_;
 
     void computePrediction() {
         this->x_ = model_.F * this->x_;

@@ -20,12 +20,12 @@ public:
     using typename Base::MatrixH;
     using typename Base::MatrixK;
 
-    using IFSystemModel = typename Base::SystemModel;
+    struct SystemModel : public Base::BaseModel {};
     using Information = std::pair<StateVector, StateMatrix>;
 
     InformationFilter(
         const StateVector& x,
-        const IFSystemModel& model,
+        const SystemModel& model,
         const StateMatrix& P)
         : Base(x, P), model_{model} {
             Y_ = P.inverse();
@@ -50,7 +50,7 @@ private:
     StateVector y_;
     StateMatrix Y_;
     MeasureMatrix Rinv_;
-    IFSystemModel model_;
+    SystemModel model_;
 
     void computePrediction() {
         this->x_ = model_.F * this->x_;
