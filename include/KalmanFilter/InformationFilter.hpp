@@ -54,7 +54,9 @@ private:
 
     void computePrediction() {
         this->x_ = model_.F * this->x_;
-        this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+        if (this->has_state_angle_) {
+            this->template normalizeAngles<StateVector>(this->x_, this->state_angle_flag_);
+        }
         this->P_ = model_.F * this->P_ * model_.F.transpose() + model_.Q;
 
         Y_ = this->P_.inverse();
