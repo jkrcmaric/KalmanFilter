@@ -31,7 +31,7 @@ public:
             Y_ = P.inverse();
             y_ = Y_ * this->x_;
 
-            Rinv_ = R.inverse();
+            Rinv_ = model_.R.inverse();
         }
 
     void update(const std::vector<MeasureVector>& zs) {
@@ -81,15 +81,16 @@ private:
     }
 
     Information getInformationContribution(const MeasureVector& z) {
-        MeasureVector zeta = z;
-        if (this->has_measurement_angle_) {
-            MeasureVector innovation = zeta - model_.H * this->x_;
-            this->template normalizeAngles<MeasureVector>(innovation, this->measurement_angle_flag_);
-            zeta = innovation + model_.H * this->x_;
-        }
-
         StateMatrix I = model_.H.transpose() * Rinv_ * model_.H;
-        StateVector i = model_.H.transpose() * Rinv_ * zeta;
+        StateVector i;
+        if (this->has_measurement_angle_) {
+            MeasureVector Hx = model_.H * this->x_; 
+            MeasureVector innovation = z - Hx;
+            this->template normalizeAngles<MeasureVector>(innovation, this->measurement_angle_flag_);
+            i = model_.H.transpose() * Rinv_ * (innovation + Hx); // H^T * R^-1 * z_norm
+        } else {
+            i = model_.H.transpose() * Rinv_ * z;
+        }
 
         return {i, I};
     }

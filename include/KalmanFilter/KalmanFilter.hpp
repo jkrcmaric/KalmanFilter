@@ -1,7 +1,6 @@
 #ifndef KALMAN_FILTER_H
 #define KALMAN_FILTER_H
 
-#include <iostream>
 #include <functional>
 #include <vector>
 #include <cmath>
