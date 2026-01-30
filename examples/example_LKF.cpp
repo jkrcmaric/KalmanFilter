@@ -7,63 +7,91 @@
 #include "../include/KalmanFilter/LinearKalmanFilter.hpp"
 
 // --- Constants ---
-const double DT = 0.1;        // Time step
-const double DURATION = 60.0; // Run for 10 seconds
+const double DT = 0.1;            // Time step
+const double DURATION = 30.0;     // Run for 10 seconds
 const double TRUE_VELOCITY = 5.0; // m/s
 const double MEASURE_NOISE = 2.0; // meters (Standard Deviation)
 
 // --- Define Types ---
-// State: [Position, Velocity] (2 Dim)
-// Meas:  [Position] (1 Dim)
-using LKF = LinearKalmanFilter<2, 1>;
+// 1. The Filter: Defined ONLY by State Dimension (Pos, Vel)
+using LKF = LinearKalmanFilter<2>;
+
+// 2. The Models: Defined explicitly
+using ProcessModel = LKF::ProcessModel;
+using GPSSensor    = LKF::SensorModel<1>; // 1D Measurement (Position)
+
+// 3. Data Types for convenience
 using StateVector = LKF::StateVector;
-using MeasureVector = LKF::MeasureVector;
+using StateMatrix = LKF::StateMatrix;
 
 int main() {
-    // 1. Configure the Linear System Model
-    LKF::SystemModel model;
+    // =========================================================================
+    // 1. Configure the Process Model (Physics)
+    // =========================================================================
+    ProcessModel process_model;
 
     // A. Transition Matrix (F)
     // x_new = x + v*dt
     // v_new = v
-    model.F << 1.0, DT,
-               0.0, 1.0;
+    StateMatrix F;
+    F << 1.0, DT,
+         0.0, 1.0;
+    process_model.setF(F);
 
-    // B. Measurement Matrix (H)
-    // z = 1*x + 0*v
-    model.H << 1.0, 0.0;
+    // B. Process Noise (Q)
+    // Small uncertainty in velocity, very small in position
+    StateMatrix Q;
+    Q.setIdentity();
+    Q(0,0) = 0.01; 
+    Q(1,1) = 0.1;
+    process_model.setQ(Q);
 
-    // C. Noise Matrices
-    // Process Noise (Q): Small uncertainty in velocity
-    model.Q.setIdentity();
-    model.Q(0,0) = 0.01;
-    model.Q(1,1) = 0.1;
+    // =========================================================================
+    // 2. Configure the Sensor Model (GPS)
+    // =========================================================================
+    GPSSensor gps_model;
 
-    // Measurement Noise (R): Match sensor specs
-    model.R << MEASURE_NOISE * MEASURE_NOISE;
+    // A. Measurement Matrix (H)
+    // z = 1*x + 0*v  (We only measure position)
+    GPSSensor::MatrixH H;
+    H << 1.0, 0.0;
+    gps_model.setH(H);
 
-    // 2. Initialize State
-    // Truth: Start at 0, moving at 5 m/s
-    StateVector x_true;
-    x_true << 0.0, TRUE_VELOCITY;
+    // B. Measurement Noise (R)
+    GPSSensor::MeasureMatrix R;
+    R << MEASURE_NOISE * MEASURE_NOISE;
+    gps_model.setR(R);
 
-    // Estimate: Start at 0, but assume 0 velocity (Let filter learn it)
+    // =========================================================================
+    // 3. Initialize Filter
+    // =========================================================================
+    
+    // Initial Estimate: Start at 0, assume 0 velocity
     StateVector x_est; 
     x_est << 0.0, 0.0;
 
-    // Initial Covariance (High uncertainty in velocity)
-    LKF::StateMatrix P0;
+    // Initial Covariance: High uncertainty in initial velocity
+    StateMatrix P0;
     P0.setIdentity();
     P0(1,1) = 100.0;
 
-    // Instantiate Filter
-    LKF lkf(x_est, model, P0);
+    // Instantiate Filter (Note: No models passed here, just State & Covariance)
+    LKF lkf(x_est, P0);
 
-    // 3. Simulation Loop
+    // =========================================================================
+    // 4. Simulation Loop
+    // =========================================================================
+    
+    // Truth State: Start at 0, moving at 5 m/s
+    StateVector x_true;
+    x_true << 0.0, TRUE_VELOCITY;
+
+    // Random Number Generator
     std::mt19937 gen(1234);
     std::normal_distribution<> noise(0.0, MEASURE_NOISE);
 
     std::cout << "Starting Linear Kalman Filter Test (1D Train)..." << std::endl;
+    std::cout << std::string(60, '-') << std::endl;
     std::cout << std::left << std::setw(6) << "Time" 
               << " | " << std::setw(10) << "True Pos" 
               << " | " << std::setw(10) << "Est Pos" 
@@ -72,17 +100,20 @@ int main() {
     std::cout << std::string(60, '-') << std::endl;
 
     for (double t = 0; t <= DURATION; t += DT) {
-        // --- A. Generate Data ---
-        // 1. Evolve Truth (Physics)
-        x_true = model.F * x_true; 
+        // --- A. Generate Data (Simulation) ---
+        // Evolve Truth using the physics matrix directly
+        x_true = F * x_true; 
 
-        // 2. Generate Noisy Measurement (Sensor)
-        MeasureVector z;
+        // Generate Noisy GPS Measurement
+        Eigen::Matrix<double, 1, 1> z;
         z(0) = x_true(0) + noise(gen);
 
         // --- B. Filter Step ---
-        lkf.predict();
-        lkf.update(z);
+        // 1. Predict (Pass the Physics Model)
+        lkf.predict(process_model);
+
+        // 2. Update (Pass the specific Sensor Model and Measurement)
+        lkf.update(gps_model, z);
 
         // --- C. Logging ---
         StateVector est = lkf.getState();

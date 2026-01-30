@@ -5,11 +5,11 @@
 #include <iomanip>
 
 // Include the new header
-#include "../include/KalmanFilter/ExtendedKalmanFilter.hpp" 
+#include "../include/KalmanFilter/ExtendedInformationFilter.hpp" 
 
 // --- Simulation Constants ---
 const double DT           = 0.1;
-const double SIM_DURATION = 30.0; 
+const double SIM_DURATION = 600.0; 
 
 // Physics (Target Motion)
 const double RADIAL_SPEED = 20.0; 
@@ -25,14 +25,14 @@ const double NOISE_ELEV   = 0.01;
 // --- TYPE DEFINITIONS ---
 // 1. The Filter: Defined by State Dimension ONLY (6 States)
 // State: [r, az, el, r_dot, az_dot, el_dot]
-using EKF = ExtendedKalmanFilter<6>;
+using EIF = ExtendedInformationFilter<6>;
 
 // 2. The Models
-using ProcessModel = EKF::ProcessModel;
-using RadarSensor  = EKF::SensorModel<3>; // 3D Measurement: [r, az, el]
+using ProcessModel = EIF::ProcessModel;
+using RadarSensor  = EIF::SensorModel<3>; // 3D Measurement: [r, az, el]
 
 // 3. Data Types
-using StateVector   = EKF::StateVector;
+using StateVector   = EIF::StateVector;
 using MeasureVector = RadarSensor::MeasureVector;
 
 struct DataPoint {
@@ -46,7 +46,7 @@ DataPoint generateData(double t, std::mt19937& gen, std::normal_distribution<>& 
     DataPoint dp;
     dp.t = t;
 
-    // 1. Physics in Cartesian
+    // 1. Physics in Cartesian (Ground Truth)
     double r_sim = 1000.0 + RADIAL_SPEED * t;
     double theta = ANGULAR_VEL * t;
     
@@ -54,7 +54,6 @@ DataPoint generateData(double t, std::mt19937& gen, std::normal_distribution<>& 
     double py = r_sim * std::sin(theta);
     double pz = 500.0 + (VERTICAL_VEL * t) + (ALT_AMPLITUDE * std::sin(theta));
 
-    // Store Cartesian Truth
     dp.x_cart_true << px, py, pz;
 
     // 2. Generate Noisy Measurement (Spherical)
@@ -67,7 +66,7 @@ DataPoint generateData(double t, std::mt19937& gen, std::normal_distribution<>& 
                  az    + d(gen) * NOISE_AZIM,
                  el    + d(gen) * NOISE_ELEV;
     
-    // Wrap Azimuth measurement to [-PI, PI]
+    // Wrap Azimuth measurement to [-PI, PI] for realism
     dp.z_meas(1) = std::remainder(dp.z_meas(1), 2.0*M_PI);
 
     return dp;
@@ -105,7 +104,7 @@ int main() {
 
     // B. Analytical Jacobian (Optional - for performance)
     process_model.setAnalyticalJacobianF([](const StateVector& x) {
-        EKF::StateMatrix F = EKF::StateMatrix::Identity();
+        EIF::StateMatrix F = EIF::StateMatrix::Identity();
         F(0,3) = DT; 
         F(1,4) = DT; 
         F(2,5) = DT;
@@ -113,7 +112,7 @@ int main() {
     });
 
     // C. Process Noise
-    EKF::StateMatrix Q = EKF::StateMatrix::Identity();
+    EIF::StateMatrix Q = EIF::StateMatrix::Identity();
     Q.block<3,3>(3,3) *= 0.5; // Uncertainty in velocity
     process_model.setQ(Q);
 
@@ -171,18 +170,20 @@ int main() {
     StateVector x0;
     x0.setZero();
     x0(0) = r0; x0(1) = az0; x0(2) = el0; 
-    // Leave velocities (indices 3,4,5) as 0 to test convergence
+    // Leave velocities (indices 3,4,5) as 0
 
-    EKF::StateMatrix P0 = EKF::StateMatrix::Identity();
+    EIF::StateMatrix P0 = EIF::StateMatrix::Identity();
     P0.diagonal() << 100, 0.1, 0.1, 100, 0.1, 0.1;
 
-    // Instantiate Filter (Stateless)
-    EKF ekf(x0, P0);
+    // Instantiate EIF
+    // INTERNAL: Converts (x0, P0) -> Information Vector y, Information Matrix Y
+    EIF eif(x0, P0);
 
     // =========================================================================
     // 4. Simulation Loop
     // =========================================================================
-    std::cout << "\nStarting Simulation (Spherical Tracking -> Cartesian Output)..." << std::endl;
+    std::cout << "\nStarting Extended Information Filter Simulation..." << std::endl;
+    std::cout << "Filter is tracking in Information Space (y, Y)" << std::endl;
     std::cout << std::string(80, '-') << std::endl;
     std::cout << std::left << std::setw(6) << "Time" 
               << " | " << std::setw(25) << "Truth (x, y, z)" 
@@ -194,34 +195,31 @@ int main() {
         DataPoint dp = generateData(t, gen, d);
         
         // --- FILTER STEP ---
-        // 1. Predict using the Kinematic Process Model
-        ekf.predict(process_model);
+        
+        // 1. Predict
+        // Expensive in EIF: Inverts Y->P, Propagates P, Inverts P->Y
+        eif.predict(process_model);
 
-        // 2. Update using the Radar Sensor Model
-        ekf.update(radar_model, dp.z_meas);
+        // 2. Update
+        // Cheap in EIF: Additive update (y += i, Y += I)
+        eif.update(radar_model, dp.z_meas);
 
         // --- LOGGING ---
-        // 1. Get Spherical Estimate
-        StateVector est_spherical = ekf.getState();
+        // Get State (Automatically converts Y -> P -> x)
+        StateVector est_spherical = eif.getState();
         
-        // 2. Convert to Cartesian for Display
         Eigen::Vector3d est_cart = sphericalToCartesian(est_spherical);
-
-        // 3. Compute Error
         double error_3d = (dp.x_cart_true - est_cart).norm();
 
         if (std::abs(std::remainder(t, 1.0)) < 1e-5) {
             std::cout << std::fixed << std::setprecision(1)
                       << std::setw(6) << t << " | "
-                      // Truth
                       << std::setw(7) << dp.x_cart_true(0) << " "
                       << std::setw(7) << dp.x_cart_true(1) << " "
                       << std::setw(7) << dp.x_cart_true(2) << " | "
-                      // Estimate (Converted)
                       << std::setw(7) << est_cart(0) << " "
                       << std::setw(7) << est_cart(1) << " "
                       << std::setw(7) << est_cart(2) << " | "
-                      // Error
                       << std::setw(10) << std::setprecision(3) << error_3d
                       << std::endl;
         }
