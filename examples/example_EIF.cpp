@@ -4,7 +4,6 @@
 #include <random>
 #include <iomanip>
 
-// Include the new header
 #include "../include/KalmanFilter/ExtendedInformationFilter.hpp" 
 
 // --- Simulation Constants ---
