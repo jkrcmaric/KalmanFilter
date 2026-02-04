@@ -64,16 +64,7 @@ public:
 
         // 1. Update Jacobian H (Once for the batch)
         // EKF Assumption: H is constant at the operating point x
-        if (model.automaticJacobian()) {
-            MatrixH H_num;
-            this->template computeJacobian<MatrixH, MeasureVector>(
-                this->x_, H_num,
-                [&model](const StateVector& s) { return model.hx(s); }
-            );
-            model.setH(H_num);
-        } else {
-            model.computeAnalyticalJacobian(this->x_);
-        }
+        model.updateJacobian(this->x_);
 
         // 2. Cache R_inv
         auto R_inv = model.R().inverse();
@@ -107,16 +98,7 @@ protected:
      */
     void computePrediction(ProcessModel& model) {
         // 1. Compute Jacobian F
-        if (model.automaticJacobian()) {
-            StateMatrix F_num;
-            this->template computeJacobian<StateMatrix, StateVector>(
-                this->x_, F_num, 
-                [&model](const StateVector& s) { return model.fx(s); }
-            );
-            model.setF(F_num);
-        } else {
-            model.computeAnalyticalJacobian(this->x_);
-        }
+        model.updateJacobian(this->x_);
 
         // 2. Predict State (Non-Linear): x = f(x)
         this->x_ = model.fx(this->x_);
@@ -147,16 +129,7 @@ protected:
         using MatrixH = Eigen::Matrix<double, MeasureDim, StateDim>;
 
         // 1. Compute Jacobian H
-        if (model.automaticJacobian()) {
-            MatrixH H_num;
-            this->template computeJacobian<MatrixH, MeasureVector>(
-                this->x_, H_num,
-                [&model](const StateVector& s) { return model.hx(s); }
-            );
-            model.setH(H_num);
-        } else {
-            model.computeAnalyticalJacobian(this->x_);
-        }
+        model.updateJacobian(this->x_);
 
         // 2. Compute Contribution
         auto R_inv = model.R().inverse();
@@ -217,10 +190,6 @@ protected:
         
         // x = P * y
         this->x_ = this->P_ * y_;
-
-        // Note: Angle wrapping usually happens at the Prediction step (on State) 
-        // or Update step (on Innovation). We rarely wrap 'x' here directly 
-        // because we lack the angle flags from the ProcessModel in this scope.
     }
 };
 

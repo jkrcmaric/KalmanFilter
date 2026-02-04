@@ -8,8 +8,7 @@
 
 /**
  * @brief Linear Information Filter (IF).
- * * The Information Filter is the "Dual" of the Kalman Filter.
- * * It tracks the Information State (y, Y) instead of (x, P).
+ * * The IF tracks the Information State (y, Y) instead of (x, P).
  * * Y = P^-1  (Information Matrix)
  * * y = Y * x (Information Vector)
  * * Advantages:
@@ -185,10 +184,6 @@ protected:
         
         // x = P * y
         this->x_ = this->P_ * y_;
-
-        // Note: We do NOT wrap angles here on 'x'.
-        // In IF, 'y' stores the unwrapped information accumulation.
-        // Wrapping is handled during the next Prediction step or prior to Update.
     }
 };
 

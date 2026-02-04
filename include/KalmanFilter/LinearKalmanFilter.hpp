@@ -14,7 +14,6 @@
  */
 template <int StateDim>
 class LinearKalmanFilter : public KalmanFilter<LinearKalmanFilter<StateDim>, StateDim> {
-    // Boilerplate for CRTP (Curiously Recurring Template Pattern)
     using Base = KalmanFilter<LinearKalmanFilter<StateDim>, StateDim>;
     friend class KalmanFilter<LinearKalmanFilter<StateDim>, StateDim>;
 
@@ -67,7 +66,7 @@ protected:
     /**
      * @brief Computes the posterior state and covariance.
      * Implements: K = PH'S^-1, x = x + Ky, P_joseph
-     * * @tparam MeasureDim Automatically deduced from the sensor model
+     * * @tparam MeasureDim, Automatically deduced from the sensor model!
      * * @param model Reference to the sensor model (H, R)
      * * @param z The actual measurement vector
      */
@@ -91,7 +90,7 @@ protected:
         MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
 
         // 4. Kalman Gain: K = P * H' * S^-1
-        // We use LDLT decomposition for numerically stable inversion of S (symmetric positive definite)
+        // Uses LDLT decomposition for numerically stable inversion of S (symmetric positive definite)
         MatrixK K = this->P_ * model.H().transpose() * S.ldlt().solve(MeasureMatrix::Identity());
 
         // 5. Update State: x = x + K * y
