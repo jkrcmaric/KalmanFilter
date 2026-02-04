@@ -7,16 +7,10 @@
 #include "KalmanFilter.hpp"
 
 /**
- * @brief Linear Information Filter (IF).
+ * @brief Information Filter (IF).
  * * The IF tracks the Information State (y, Y) instead of (x, P).
  * * Y = P^-1  (Information Matrix)
  * * y = Y * x (Information Vector)
- * * Advantages:
- * 1. Initialization with infinite uncertainty (P=inf) is easy (Y=0).
- * 2. Multi-sensor fusion is purely additive and very cheap (Y += I).
- * * Disadvantages:
- * 1. Prediction is computationally expensive (requires inversion).
- * 2. Recovering state x requires inversion (P = Y^-1).
  * * @tparam StateDim Fixed size of the state vector.
  */
 template <int StateDim>
@@ -52,17 +46,39 @@ public:
     }
 
     /**
-     * @brief Specialized Batch Update.
-     * Fuses a vector of measurements of the SAME type efficiently.
-     * * Efficiency: Accumulates information (additive) and performs 
-     * matrix inversion (syncState) ONLY ONCE at the end.
+     * @brief Fuses a measurement WITHOUT updating the covariance P.
+     * Use this when you have multiple different sensors to process in one step.
+     * 1. Call predict()
+     * 2. Call fuse(radar, z1)
+     * 3. Call fuse(lidar, z2)
+     * 4. Call updateState() <- Expensive Inversion happens ONCE here.
+     */
+    template <int MeasureDim>
+    void fuse(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+
+        model.updateJacobian(this->x_);
+
+        auto R_inv = model.R().inverse();
+        
+        InformationPair contrib = getInformationContribution<MeasureDim>(z, model, R_inv);
+
+        y_ += contrib.first;
+        Y_ += contrib.second;
+    }
+
+    /**
+     * @brief Fuses a batch of measurements of the SAME type.
+     * * Optimized to compute R_inv only once.
+     * * Does NOT update (x, P). You must call updateState() later.
      * * @tparam MeasureDim Dimension of the sensor
      * @param model The sensor model (H, R)
      * @param zs Vector of measurements
      */
     template <int MeasureDim>
-    void updateBatch(const SensorModel<MeasureDim>& model, 
+    void fuseBatch(SensorModel<MeasureDim>& model, 
                      const std::vector<Eigen::Matrix<double, MeasureDim, 1>>& zs) {
+
+        model.updateJacobian(this->x_);
         
         // Cache Inverse of R once for the whole batch
         auto R_inv = model.R().inverse();
@@ -72,8 +88,28 @@ public:
             y_ += contrib.first;
             Y_ += contrib.second;
         }
-        
-        // Invert Y -> P only once after fusing all data
+    }
+
+    /**
+     * @brief Manually synchronizes P and x from Y and y.
+     * Call this once after fusing all sensors.
+     */
+    void updateState() {
+        syncState();
+    }
+
+    // Accessors
+    void setState(const StateVector& x) { 
+        this->x_ = x; 
+        y_ = Y_ * this->x_;
+    }
+    void setP(const StateMatrix& P) { 
+        this->P_ = P; 
+        Y_ = this->P_.inverse();
+        y_ = Y_ * this->x_;
+    }
+    void setY(const StateMatrix& Y) {
+        Y_ = Y;
         syncState();
     }
 
@@ -93,18 +129,22 @@ protected:
      * (Hybrid Information Filter approach).
      */
     void computePrediction(ProcessModel& model) {
-        // 1. Predict State: x = F * x
-        this->x_ = model.F() * this->x_;
+
+        // Compute Jacobian F (if non-linear)
+        model.updateJacobian(this->x_);
+
+        // Predict State: x = F * x (Linear) or fx(x) (Non-Linear)
+        this->x_ = model.fx(this->x_);
 
         // Handle State Angle Wrapping
         if (model.hasAngle()) {
             this->template normalizeAngles<StateDim>(this->x_, model.getAngleFlags());
         }
 
-        // 2. Predict Covariance: P = F * P * F' + Q
+        // Predict Covariance: P = F * P * F' + Q
         this->P_ = model.F() * this->P_ * model.F().transpose() + model.Q();
 
-        // 3. Update Information Space (The expensive part)
+        // Update Information Space (The expensive part)
         Y_ = this->P_.inverse();
         y_ = Y_ * this->x_;
     }
@@ -115,18 +155,21 @@ protected:
      */
     template <int MeasureDim>
     void computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+
+        // Compute Jacobian H (if non-linear)
+        model.updateJacobian(this->x_);
         
         // Calculate R_inv locally
         auto R_inv = model.R().inverse();
 
-        // 1. Get Contribution
+        // Get Contribution
         InformationPair contrib = getInformationContribution<MeasureDim>(z, model, R_inv);
 
-        // 2. Accumulate Information
+        // Accumulate Information
         y_ += contrib.first;
         Y_ += contrib.second;
 
-        // 3. Recover standard State (x, P)
+        // Recover standard State (x, P)
         syncState();
     }
 
@@ -146,30 +189,26 @@ protected:
     {
         using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
 
-        // Calculate Information Matrix Contribution: I = H' * R^-1 * H
-        StateMatrix I = model.H().transpose() * R_inv * model.H();
-        StateVector i;
-
         // Calculate Information Vector Contribution: i = H' * R^-1 * z
-        // Note: If angles are involved, we cannot simply use z. 
+        // Note: If non-linear or angles are involved, we cannot simply use z. 
         // We must compute a "Pseudo-measurement" that accounts for the wrap.
-        if (model.hasAngle()) {
-            // 1. Expected measurement
-            MeasureVector Hx = model.H() * this->x_;
+        
+        // 1. Expected measurement
+        MeasureVector hx = model.hx(this->x_);
+
+        MeasureVector innovation = z - hx;
             
-            // 2. Innovation with wrapping
-            MeasureVector innovation = z - Hx;
+        // 2. Innovation with wrapping
+         if (model.hasAngle()) {
             this->template normalizeAngles<MeasureDim>(innovation, model.getAngleFlags());
+         }
             
-            // 3. Pseudo-Measurement (Linearized in the correct manifold)
-            MeasureVector zeta = innovation + Hx;
+        // 3. Pseudo-Measurement (Linearized in the correct manifold)
+        MeasureVector zeta = innovation + model.H() * this->x_;
             
-            // 4. Compute 'i' using Pseudo-Measurement
-            i = model.H().transpose() * R_inv * zeta;
-        } else {
-            // Standard Linear Case
-            i = model.H().transpose() * R_inv * z;
-        }
+        // 4. Compute 'i' using Pseudo-Measurement
+        StateVector i = model.H().transpose() * R_inv * zeta;
+        StateMatrix I = model.H().transpose() * R_inv * model.H();
 
         return {i, I};
     }

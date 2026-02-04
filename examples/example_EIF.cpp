@@ -4,7 +4,7 @@
 #include <random>
 #include <iomanip>
 
-#include "../include/KalmanFilter/ExtendedInformationFilter.hpp" 
+#include "../include/KalmanFilter/InformationFilter.hpp" 
 
 // --- Simulation Constants ---
 const double DT           = 0.1;
@@ -26,7 +26,7 @@ const double OPTIC_NOISE_AZ = 0.005; // ~0.2 degrees error (Precise!)
 const double OPTIC_NOISE_EL = 0.005;
 
 // --- TYPE DEFINITIONS ---
-using EIF = ExtendedInformationFilter<6>; // State: [r, az, el, r_dot, az_dot, el_dot]
+using EIF = InformationFilter<6>; // State: [r, az, el, r_dot, az_dot, el_dot]
 
 // Define TWO different sensor models
 using RadarModel   = EIF::SensorModel<3>; // Measures [r, az, el]
@@ -184,10 +184,12 @@ int main() {
         // We just add contributions from whatever sensors are available.
         
         // 1. FUSE RADAR (Provides coarse location + Range)
-        eif.update(radar, dp.z_radar);
+        eif.fuse(radar, dp.z_radar);
 
         // 2. FUSE OPTICAL (Tightens the Angle estimate significantly)
-        eif.update(optical, dp.z_optical);
+        eif.fuse(optical, dp.z_optical);
+
+        eif.updateState();
 
         // --- LOGGING ---
         if (std::abs(std::remainder(t, 2.0)) < 1e-5) {

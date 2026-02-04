@@ -119,11 +119,13 @@ int main() {
         info_filter.predict(process_model);
 
         // 2. Update (Cheap in IF: Additive Information)
-        // We can fuse as many sensors as we want simply by calling update multiple times
+        // We can fuse as many sensors as we want simply by calling fuse multiple times
         // The expensive Matrix Inversion to recover State only happens when we ask for it (syncState)
         
-        info_filter.update(sensor_A, z_a);
-        info_filter.update(sensor_B, z_b);
+        info_filter.fuse(sensor_A, z_a);
+        info_filter.fuse(sensor_B, z_b);
+
+        info_filter.updateState();
 
         // --- C. Logging ---
         StateVector est = info_filter.getState(); // Auto-calls syncState() internally if needed
