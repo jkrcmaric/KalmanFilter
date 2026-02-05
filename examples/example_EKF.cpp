@@ -3,11 +3,13 @@
 #include <cmath>
 #include <random>
 #include <iomanip>
+
+// Include the new header
 #include "../include/KalmanFilter/ExtendedKalmanFilter.hpp" 
 
 // --- Simulation Constants ---
 const double DT           = 0.1;
-const double SIM_DURATION = 600.0; 
+const double SIM_DURATION = 30.0; 
 
 // Physics (Target Motion)
 const double RADIAL_SPEED = 20.0; 
@@ -20,11 +22,18 @@ const double NOISE_RANGE  = 5.0;
 const double NOISE_AZIM   = 0.01; 
 const double NOISE_ELEV   = 0.01;
 
-// --- SPHERICAL STATE VECTOR ---
+// --- TYPE DEFINITIONS ---
+// 1. The Filter: Defined by State Dimension ONLY (6 States)
 // State: [r, az, el, r_dot, az_dot, el_dot]
-using EKF = ExtendedKalmanFilter<6, 3>;
-using StateVector = EKF::StateVector;
-using MeasureVector = EKF::MeasureVector;
+using EKF = ExtendedKalmanFilter<6>;
+
+// 2. The Models
+using ProcessModel = EKF::ProcessModel;
+using RadarSensor  = EKF::SensorModel<3>; // 3D Measurement: [r, az, el]
+
+// 3. Data Types
+using StateVector   = EKF::StateVector;
+using MeasureVector = RadarSensor::MeasureVector;
 
 struct DataPoint {
     double t;
@@ -58,6 +67,7 @@ DataPoint generateData(double t, std::mt19937& gen, std::normal_distribution<>& 
                  az    + d(gen) * NOISE_AZIM,
                  el    + d(gen) * NOISE_ELEV;
     
+    // Wrap Azimuth measurement to [-PI, PI]
     dp.z_meas(1) = std::remainder(dp.z_meas(1), 2.0*M_PI);
 
     return dp;
@@ -68,12 +78,6 @@ Eigen::Vector3d sphericalToCartesian(const StateVector& x_sph) {
     double r  = x_sph(0);
     double az = x_sph(1);
     double el = x_sph(2);
-
-    // Geometry matching our generation logic:
-    // Ground Dist = r * cos(el)
-    // z = r * sin(el)
-    // x = Ground Dist * cos(az)
-    // y = Ground Dist * sin(az)
     
     double gd = r * std::cos(el);
     double px = gd * std::cos(az);
@@ -84,56 +88,83 @@ Eigen::Vector3d sphericalToCartesian(const StateVector& x_sph) {
 }
 
 int main() {
-    EKF::EKFSystemModel model;
+    // =========================================================================
+    // 1. Configure Process Model (Kinematics)
+    // =========================================================================
+    ProcessModel process_model;
 
-    // --- 1. SPHERICAL PROCESS MODEL ---
-    // Simple kinematic update on spherical states
-    model.fx = [](const StateVector& x) {
+    // A. Transition Function (Non-Linear or Linear Kinematics)
+    // x_next = x + x_dot * dt
+    process_model.setTransitionFunction([](const StateVector& x) {
         StateVector x_next = x;
         x_next(0) += x(3) * DT; // Range
         x_next(1) += x(4) * DT; // Azimuth
         x_next(2) += x(5) * DT; // Elevation
         return x_next;
-    };
+    });
 
-    model.jacob_f = [](const StateVector& x) {
+    // B. Analytical Jacobian (Optional - for performance)
+    process_model.setAnalyticalJacobianF([](const StateVector& x) {
         EKF::StateMatrix F = EKF::StateMatrix::Identity();
-        F(0,3) = DT; F(1,4) = DT; F(2,5) = DT;
+        F(0,3) = DT; 
+        F(1,4) = DT; 
+        F(2,5) = DT;
         return F;
-    };
+    });
 
-    // --- 2. MEASUREMENT MODEL (LINEAR) ---
-    // We measure the first 3 states directly
-    model.hx = [](const StateVector& x) {
+    // C. Process Noise
+    EKF::StateMatrix Q = EKF::StateMatrix::Identity();
+    Q.block<3,3>(3,3) *= 0.5; // Uncertainty in velocity
+    process_model.setQ(Q);
+
+    // D. Angle Flags (Critical for Azimuth wrapping)
+    process_model.setAsAngle(1, true); // Index 1 (Azimuth) is an angle
+
+    // =========================================================================
+    // 2. Configure Sensor Model (Radar)
+    // =========================================================================
+    RadarSensor radar_model;
+
+    // A. Measurement Function
+    // We measure [r, az, el] directly from state
+    radar_model.setMeasurementFunction([](const StateVector& x) {
         MeasureVector z;
         z << x(0), x(1), x(2); 
         return z;
-    };
+    });
 
-    model.jacob_h = [](const StateVector& x) {
-        EKF::MatrixH H = EKF::MatrixH::Zero();
-        H(0,0) = 1.0; H(1,1) = 1.0; H(2,2) = 1.0;
+    // B. Analytical Jacobian H
+    radar_model.setAnalyticalJacobianH([](const StateVector& x) {
+        RadarSensor::MatrixH H = RadarSensor::MatrixH::Zero();
+        H(0,0) = 1.0; 
+        H(1,1) = 1.0; 
+        H(2,2) = 1.0;
         return H;
-    };
+    });
 
-    // --- 3. TUNING ---
-    model.Q.setIdentity();
-    model.Q.block<3,3>(3,3) *= 0.5; // Allow velocity variance
+    // C. Measurement Noise
+    RadarSensor::MeasureMatrix R;
+    R.setIdentity();
+    R.diagonal() << NOISE_RANGE*NOISE_RANGE, 
+                    NOISE_AZIM*NOISE_AZIM, 
+                    NOISE_ELEV*NOISE_ELEV;
+    radar_model.setR(R);
 
-    model.R.setIdentity();
-    model.R.diagonal() << NOISE_RANGE*NOISE_RANGE, 
-                          NOISE_AZIM*NOISE_AZIM, 
-                          NOISE_ELEV*NOISE_ELEV;
+    // D. Angle Flags (Sensor side)
+    radar_model.setAsAngle(1, true); // Index 1 (Azimuth) wraps 
 
-    // --- Initialization ---
-    std::mt19937 gen(42);
+    // =========================================================================
+    // 3. Initialize Filter
+    // =========================================================================
+    std::random_device rd;
+    std::mt19937 gen(rd());
     std::normal_distribution<> d(0, 1);
     
     // Get initial truth to set starting state
     DataPoint init = generateData(0, gen, d);
     
     // Convert initial truth Cartesian -> Spherical for the state
-    double r0 = init.x_cart_true.norm();
+    double r0  = init.x_cart_true.norm();
     double az0 = std::atan2(init.x_cart_true.y(), init.x_cart_true.x());
     double el0 = std::atan2(init.x_cart_true.z(), init.x_cart_true.head<2>().norm());
 
@@ -145,12 +176,14 @@ int main() {
     EKF::StateMatrix P0 = EKF::StateMatrix::Identity();
     P0.diagonal() << 100, 0.1, 0.1, 100, 0.1, 0.1;
 
-    EKF ekf(x0, model, P0);
-    // Handle Azimuth Wrapping
-    ekf.setStateAsAngle(1, true); 
-    ekf.setMeasurementAsAngle(1, true);
+    // Instantiate Filter (Stateless)
+    EKF ekf(x0, P0);
 
+    // =========================================================================
+    // 4. Simulation Loop
+    // =========================================================================
     std::cout << "\nStarting Simulation (Spherical Tracking -> Cartesian Output)..." << std::endl;
+    std::cout << std::string(80, '-') << std::endl;
     std::cout << std::left << std::setw(6) << "Time" 
               << " | " << std::setw(25) << "Truth (x, y, z)" 
               << " | " << std::setw(25) << "Est (x, y, z)" 
@@ -160,9 +193,14 @@ int main() {
     for (double t = DT; t <= SIM_DURATION; t += DT) {
         DataPoint dp = generateData(t, gen, d);
         
-        ekf.predict();
-        ekf.update(dp.z_meas);
+        // --- FILTER STEP ---
+        // 1. Predict using the Kinematic Process Model
+        ekf.predict(process_model);
 
+        // 2. Update using the Radar Sensor Model
+        ekf.update(radar_model, dp.z_meas);
+
+        // --- LOGGING ---
         // 1. Get Spherical Estimate
         StateVector est_spherical = ekf.getState();
         

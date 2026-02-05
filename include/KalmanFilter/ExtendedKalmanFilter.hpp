@@ -1,111 +1,105 @@
-#ifndef EXTENDED_KALMAN_FILTER_H
-#define EXTENDED_KALMAN_FILTER_H
-
-#include <functional>
-#include <vector>
+#ifndef EXTENDED_KALMAN_FILTER_HPP
+#define EXTENDED_KALMAN_FILTER_HPP
 
 #include "KalmanFilter.hpp"
 
-
-template <int StateDim, int MeasureDim>
-class ExtendedKalmanFilter : public KalmanFilter<ExtendedKalmanFilter<StateDim, MeasureDim>, StateDim, MeasureDim> {
-    using Base = KalmanFilter<ExtendedKalmanFilter<StateDim, MeasureDim>, StateDim, MeasureDim>;
-    friend class KalmanFilter<ExtendedKalmanFilter<StateDim, MeasureDim>, StateDim, MeasureDim>;
+/**
+ * @brief Extended Kalman Filter (EKF).
+ * * Implements the standard EKF for non-linear systems.
+ * * Pred: x = f(x), P = FPF' + Q
+ * * Upd:  K = PH'S^-1, x = x + K(z - h(x)), P = (I - KH)P(I - KH)' + KRK'
+ * * @tparam StateDim Fixed size of the state vector.
+ */
+template <int StateDim>
+class ExtendedKalmanFilter : public KalmanFilter<ExtendedKalmanFilter<StateDim>, StateDim> {
+    using Base = KalmanFilter<ExtendedKalmanFilter<StateDim>, StateDim>;
+    friend class KalmanFilter<ExtendedKalmanFilter<StateDim>, StateDim>;
 
 public:
     using typename Base::StateVector;
-    using typename Base::MeasureVector;
     using typename Base::StateMatrix;
-    using typename Base::MatrixH;
+    using typename Base::ProcessModel;
+    
+    // Helper alias for generic Sensor Models
+    template <int Dim> 
+    using SensorModel = typename Base::template SensorModel<Dim>;
 
-    struct EKFSystemModel : Base::SystemModel {
-        std::function<StateVector(const StateVector&)> fx;
-        std::function<MeasureVector(const StateVector&)> hx;
+    /**
+     * @brief Constructor.
+     * @param x Initial State Vector
+     * @param P Initial Covariance Matrix
+     */
+    ExtendedKalmanFilter(const StateVector& x, const StateMatrix& P)
+        : Base(x, P) {}
 
-        // Optional Analytical Jacobians
-        std::function<StateMatrix(const StateVector&)> jacob_f;
-        std::function<MatrixH(const StateVector&)> jacob_h;
-    };
+protected:
+    // Identity matrix cached for efficiency in updates
+    StateMatrix I_{StateMatrix::Identity()};
 
-    // Constructors
-    ExtendedKalmanFilter(
-        const StateVector& x, 
-        const EKFSystemModel& model,
-        const StateMatrix& P)
-        : Base(x, P), model_{model} {
-            setAutomaticJacobianF(!model_.jacob_f);
-            setAutomaticJacobianH(!model_.jacob_h);
+    // =========================================================================
+    // Interface Implementation (Called by Base Class)
+    // =========================================================================
+
+    /**
+     * @brief Prediction Step.
+     * 1. Updates Jacobian F (Numerical or Analytical).
+     * 2. Propagates State x (Non-Linear f(x)).
+     * 3. Propagates Covariance P (Linearized F).
+     */
+    void computePrediction(ProcessModel& model) {
+        // 1. Compute Jacobian F
+        model.updateJacobian(this->x_);
+
+        // 2. Predict State (Non-Linear): x = f(x)
+        // Note: The model.fx() handles the fallback to F*x if no function is set
+        this->x_ = model.fx(this->x_);
+
+        // Handle State Angle Wrapping
+        if (model.hasAngle()) {
+            this->template normalizeAngles<StateDim>(this->x_, model.getAngleFlags());
         }
 
-    // Allow tuning numerical differentiation step size per dimension
-    void setEpsilon(int index, double value) { EPSILON_.at(index) = value; }
-
-    // Set whether automatic Jacobian is automatically computed via numerical differentiaiton
-    void setAutomaticJacobianF(bool value) { autoJacobianF_ = value; }
-    void setAutomaticJacobianH(bool value) { autoJacobianH_ = value; }
-
-    void setModel(const EKFSystemModel& model) { 
-        model_ = model; 
-
-        setAutomaticJacobianF(!model_.jacob_f);
-        setAutomaticJacobianH(!model_.jacob_h);
-    }
-    void setTransitionFunction(const std::function<StateVector(const StateVector&)>& fx) { model_.fx = fx; }
-    void setMeasurementFunction(const std::function<MeasureVector(const StateVector&)>& hx) { model_.hx = hx; }
-
-    void setAnalyticalJacobianF(const std::function<StateMatrix(const StateVector&)>& jacob_f) { 
-        model_.jacob_f = jacob_f; 
-        setAutomaticJacobianF(false);
-    }
-    void setAnalyticalJacobianH(const std::function<MatrixH(const StateVector&)>& jacob_h) { 
-        model_.jacob_h = jacob_h; 
-        setAutomaticJacobianH(false);
+        // 3. Predict Covariance (Linearized): P = F * P * F' + Q
+        this->P_ = model.F() * this->P_ * model.F().transpose() + model.Q();
     }
 
-private:
-    std::vector<double> EPSILON_{std::vector<double>(StateDim, 1e-6)}; // for numerical differentiation
-    bool autoJacobianF_{true};
-    bool autoJacobianH_{true};
-    EKFSystemModel model_;
+    /**
+     * @brief Update Step.
+     * 1. Updates Jacobian H (Numerical or Analytical).
+     * 2. Computes Innovation (z - h(x)).
+     * 3. Standard Kalman Gain and Covariance Update.
+     */
+    template <int MeasureDim>
+    void computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+        using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
+        using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
+        using MatrixH = Eigen::Matrix<double, MeasureDim, StateDim>;
+        using MatrixK = Eigen::Matrix<double, StateDim, MeasureDim>;
 
-    void computePrediction() {
-        if (autoJacobianF_ ) {
-            computeJacobian<StateMatrix, StateVector>(this->x_, model_.F, model_.fx);
-        } else if (model_.jacob_f) {
-            model_.F = model_.jacob_f(this->x_);
+        // 1. Compute Jacobian H
+        model.updateJacobian(this->x_);
+
+        // 2. Innovation: y = z - h(x)
+        MeasureVector y = z - model.hx(this->x_);
+
+        // Handle Angle Wrapping on Innovation
+        if (model.hasAngle()) {
+            this->template normalizeAngles<MeasureDim>(y, model.getAngleFlags());
         }
 
-        this->x_ = model_.fx(this->x_);
-    }
+        // 3. Innovation Covariance: S = H * P * H' + R
+        MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
 
-    void computeInnovation(const MeasureVector& z, MeasureVector& y) {
-        if (autoJacobianH_) {
-            computeJacobian<MatrixH, MeasureVector>(this->x_, model_.H, model_.hx);
-        } else if (model_.jacob_h) {
-            model_.H = model_.jacob_h(this->x_);
-        }
-        y = z - model_.hx(this->x_);
-    }
+        // 4. Kalman Gain: K = P * H' * S^-1
+        // Use LDLT for stability
+        MatrixK K = this->P_ * model.H().transpose() * S.ldlt().solve(MeasureMatrix::Identity());
 
-    // compute Jacobian via numerical differentiation
-    template <typename T1, typename T2>
-    void computeJacobian(const StateVector& x, T1& J, const std::function<T2(const StateVector&)>& fx) {
-        StateVector x_temp{x};
-        T2 y_plus{};
-        T2 y_minus{};
+        // 5. Update State: x = x + K * y
+        this->x_ = this->x_ + K * y;
 
-        for (int i{0}; i < StateDim; ++i) {
-            double original_value{x(i)};
-
-            x_temp(i) = original_value + EPSILON_.at(i);
-            y_plus = fx(x_temp);
-
-            x_temp(i) = original_value - EPSILON_.at(i);
-            y_minus = fx(x_temp);
-
-            x_temp(i) = original_value;
-            J.col(i) = (y_plus - y_minus) / (2*EPSILON_.at(i));
-        }
+        // 6. Update Covariance (Joseph Form): P = (I - KH)P(I - KH)' + KRK'
+        StateMatrix I_KH = I_ - K * model.H();
+        this->P_ = I_KH * this->P_ * I_KH.transpose() + K * model.R() * K.transpose();
     }
 };
 
