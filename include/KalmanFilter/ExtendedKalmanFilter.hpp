@@ -61,6 +61,9 @@ protected:
 
         // 3. Predict Covariance (Linearized): P = F * P * F' + Q
         this->P_ = model.F() * this->P_ * model.F().transpose() + model.Q();
+
+        // Force physical constraints (clamping/projection)
+        model.enforceConstraints(this->x_);
     }
 
     /**
@@ -70,7 +73,7 @@ protected:
      * 3. Standard Kalman Gain and Covariance Update.
      */
     template <int MeasureDim>
-    void computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+    bool computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
         using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
         using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
         using MatrixH = Eigen::Matrix<double, MeasureDim, StateDim>;
@@ -90,16 +93,25 @@ protected:
         // 3. Innovation Covariance: S = H * P * H' + R
         MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
 
-        // 4. Kalman Gain: K = P * H' * S^-1
-        // Use LDLT for stability
-        MatrixK K = this->P_ * model.H().transpose() * S.ldlt().solve(MeasureMatrix::Identity());
+        // 4. Gating (Outlier Rejection)
+        if (!this->rectangularGate(model, S, y)) return false; // Tier 1: Fast Sigma check
+        if (!model.domainGate(z, y, S)) return false;          // Tier 2: User Logic
 
-        // 5. Update State: x = x + K * y
+        Eigen::LDLT<MeasureMatrix> S_ldlt(S);
+        if (!this->mahalanobisGate(model, S_ldlt, y)) return false; // Tier 3: Statistical
+
+        // 5. Kalman Gain: K = P * H' * S^-1
+        // Use LDLT for stability
+        MatrixK K = this->P_ * model.H().transpose() * S_ldlt.solve(MeasureMatrix::Identity());
+
+        // 6. Update State: x = x + K * y
         this->x_ = this->x_ + K * y;
 
-        // 6. Update Covariance (Joseph Form): P = (I - KH)P(I - KH)' + KRK'
+        // 7. Update Covariance (Joseph Form): P = (I - KH)P(I - KH)' + KRK'
         StateMatrix I_KH = I_ - K * model.H();
         this->P_ = I_KH * this->P_ * I_KH.transpose() + K * model.R() * K.transpose();
+
+        return true;
     }
 };
 
