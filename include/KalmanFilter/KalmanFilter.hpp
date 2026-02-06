@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cassert>
+#include <limits>
 
 #include <eigen3/Eigen/Dense>
 
@@ -77,7 +78,7 @@ public:
             StateVector x_temp{x};
             VectorType y_plus, y_minus;
 
-            for (int i = 0; i < StateDim; ++i) {
+            for (size_t i = 0; i < StateDim; ++i) {
                 double original = x(i);
                 double eps = epsilon_.at(i);
 
@@ -176,9 +177,15 @@ public:
             return H_ * x; 
         }
 
+        const std::vector<double>& getRectangularGateLimits() const {
+            return rect_gate_limits_;
+        }
+
+        double getMahalanobisThreshold() const { return mahalanobis_threshold_; }
+
         /**
          * @brief Updates H matrix.
-         * Automatically chooses betwen Analytical (if provided) or Numerical.
+         * Automatically chooses between Analytical (if provided) or Numerical.
          */
         void updateJacobian(const StateVector& x) {
             // return if non-linear measurement function is not set
@@ -202,11 +209,27 @@ public:
             jacob_h_ = jacob_h; 
         }
 
+        void setRectangularGateLimits(double sigma_limit) {
+            std::fill(rect_gate_limits_.begin(), rect_gate_limits_.end(), sigma_limit);
+        }
+
+        void setRectangularGateLimits(int index, double sigma_limit) {
+            rect_gate_limits_.at(index) = sigma_limit;
+        }
+
+        void setMahalanobisThreshold(double threshold) {mahalanobis_threshold_ = threshold; }
+
     private:
         MatrixH H_{MatrixH::Zero()};
         MeasureMatrix R_{MeasureMatrix::Identity()};
         MeasurementFunction hx_;
         JacobianFunction jacob_h_;
+
+        // Initialize with Infinity: Effectively disables gating by default
+        std::vector<double> rect_gate_limits_{
+            std::vector<double>(MeasureDim, std::numeric_limits<double>::infinity())
+        };
+        double mahalanobis_threshold_{std::numeric_limits<double>::infinity()};
     };
 
     // =========================================================================
@@ -266,6 +289,63 @@ protected:
             }
         }
     }
+
+    /**
+     * @brief Performs Rectangular Gating (Fast Element-wise Sigma Check).
+     * Checks if the innovation of any single dimension exceeds the N-sigma limit 
+     * defined in the sensor model.
+     * * @param model The sensor model containing the gate limits.
+     * @param S The innovation covariance matrix (S = HPH' + R).
+     * @param y The innovation vector (y = z - hx).
+     * @return true if the measurement is within bounds, false if it is an outlier.
+     */
+    template <int MeasureDim>
+    bool rectangularGate(const SensorModel<MeasureDim>& model,
+                         const Eigen::Matrix<double, MeasureDim, MeasureDim>& S,
+                         const Eigen::Matrix<double, MeasureDim, 1>& y) {
+
+        const std::vector<double>& limit = model.getRectangularGateLimits();
+        
+        for (size_t i = 0; i < MeasureDim; ++i) {
+            double ysq = y(i) * y(i);
+            double limitsq = limit[i] * limit[i] * S(i, i);
+
+            // Reject if outside bounds
+            if (ysq > limitsq) return false;
+        }
+        
+        return true;
+    }
+
+    /**
+     * @brief Performs Mahalanobis Gating (Statistical Outlier Rejection).
+     * Calculates the squared Mahalanobis distance (D^2 = y^T * S^-1 * y) to determine
+     * if a measurement is statistically valid given the current covariance.
+     * * @note Uses a pre-computed LDLT decomposition for efficiency (O(N^2)).
+     * * @param model The sensor model containing the chi-squared threshold.
+     * @param S_ldlt The pre-computed LDLT decomposition of the Innovation Covariance S.
+     * @param y The innovation vector (y = z - hx).
+     * @return true if the measurement is within the threshold, false if it is an outlier.
+     */
+    template <int MeasureDim>
+    bool mahalanobisGate(const SensorModel<MeasureDim>& model,
+                         const Eigen::LDLT<Eigen::Matrix<double, MeasureDim, MeasureDim>>& S_ldlt,
+                         const Eigen::Matrix<double, MeasureDim, 1>& y) {
+
+        // Retrieve the chi-squared threshold (e.g., 5.99 for 95% confidence in 2D)
+        const double threshold = model.getMahalanobisThreshold();
+
+        // Optimization: If threshold is Infinity, gating is disabled -> Accept everything
+        if (std::isinf(threshold)) return true;
+
+        // Compute Mahalanobis Distance squared: D^2 = y^T * S^-1 * y
+        // Uses the pre-computed LDLT solver to avoid explicit inversion
+        double mahalanobis_sq = y.transpose() * S_ldlt.solve(y);
+
+        // Accept if distance is within the confidence ellipsoid
+        return mahalanobis_sq <= threshold;
+    }
+
 };
 
 #endif
