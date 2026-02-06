@@ -61,6 +61,8 @@ protected:
 
         // 3. Predict Covariance: P = F * P * F' + Q
         this->P_ = model.F() * this->P_ * model.F().transpose() + model.Q();
+
+        model.enforceConstraints(this->x_);
     }
 
     /**
@@ -71,7 +73,7 @@ protected:
      * * @param z The actual measurement vector
      */
     template <int MeasureDim>
-    void computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+    bool computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
         using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
         using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
         using MatrixK = Eigen::Matrix<double, StateDim, MeasureDim>;
@@ -89,9 +91,16 @@ protected:
         // 3. Innovation Covariance: S = H * P * H' + R
         MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
 
+        if (!this->rectangularGate(model, S, y)) return false;
+        if (!model.domainGate(z, y, S)) return false;
+
+        Eigen::LDLT<MeasureMatrix> S_ldlt(S);
+
+        if (!this->mahalanobisGate(model, S_ldlt, y)) return false;
+
         // 4. Kalman Gain: K = P * H' * S^-1
         // Uses LDLT decomposition for numerically stable inversion of S (symmetric positive definite)
-        MatrixK K = this->P_ * model.H().transpose() * S.ldlt().solve(MeasureMatrix::Identity());
+        MatrixK K = this->P_ * model.H().transpose() * S_ldlt.solve(MeasureMatrix::Identity());
 
         // 5. Update State: x = x + K * y
         this->x_ = this->x_ + K * y;
@@ -101,6 +110,8 @@ protected:
         // Symmetric and Positive Definite, preventing filter divergence due to numerical error.
         StateMatrix I_KH = I_ - K * model.H();
         this->P_ = I_KH * this->P_ * I_KH.transpose() + K * model.R() * K.transpose();
+
+        return true;
     }
 };
 

@@ -208,10 +208,13 @@ public:
         // Sets N-Sigma limits for element-wise gating
         void setRectangularGateLimits(double sigma_limit) {
             std::fill(rect_gate_limits_.begin(), rect_gate_limits_.end(), sigma_limit);
+            use_rectangular_gate_ = true;
         }
         void setRectangularGateLimits(int index, double sigma_limit) {
             rect_gate_limits_.at(index) = sigma_limit;
+            use_rectangular_gate_ = true;
         }
+        bool useRectangularGate() const { return use_rectangular_gate_; }
 
         // Sets Chi-Squared threshold for statistical gating
         void setMahalanobisThreshold(double threshold) {mahalanobis_threshold_ = threshold; }
@@ -229,6 +232,7 @@ public:
         std::vector<double> rect_gate_limits_{
             std::vector<double>(MeasureDim, std::numeric_limits<double>::infinity())
         };
+        bool use_rectangular_gate_{false}; // Default OFF
         double mahalanobis_threshold_{std::numeric_limits<double>::infinity()};
 
         DomainGateFunction domain_gate_;
@@ -251,8 +255,8 @@ public:
      * Implementation (EKF/LKF) resides in derived class.
      */
     template <int MeasureDim>
-    void update(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
-        kf().computeUpdate(model, z);
+    bool update(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+        return kf().computeUpdate(model, z);
     }
 
     void setState(const StateVector& x) { x_ = x; }
@@ -295,6 +299,8 @@ protected:
     bool rectangularGate(const SensorModel<MeasureDim>& model,
                          const Eigen::Matrix<double, MeasureDim, MeasureDim>& S,
                          const Eigen::Matrix<double, MeasureDim, 1>& y) {
+
+        if (!model.useRectangularGate()) return true;
 
         const std::vector<double>& limit = model.getRectangularGateLimits();
         
