@@ -102,6 +102,7 @@ public:
     public:
         using TransitionFunction = std::function<StateVector(const StateVector&)>;
         using JacobianFunction = std::function<StateMatrix(const StateVector&)>;
+        using ConstraintFunction = std::function<void(StateVector&)>;
 
         ProcessModel() = default;
         ~ProcessModel() = default;
@@ -116,9 +117,13 @@ public:
             return F_ * x; 
         }
 
+        void enforceConstraints(StateVector& x) const {
+            if (constraint_function_) constraint_function_(x);
+        }
+
         /**
          * @brief Updates F matrix.
-         * Automatically chooses betwen Analytical (if provided) or Numerical.
+         * Automatically chooses between Analytical (if provided) or Numerical.
          */
         void updateJacobian(const StateVector& x) {
             // return if non-linear transition function is not set
@@ -144,11 +149,14 @@ public:
             jacob_f_ = jacob_f; 
         }
 
+        void setConstraintFunction(const ConstraintFunction& func) {constraint_function_ = func; }
+
     private:
         StateMatrix F_{StateMatrix::Identity()};
         StateMatrix Q_{StateMatrix::Zero()};
         TransitionFunction fx_;
         JacobianFunction jacob_f_;
+        ConstraintFunction constraint_function_;
     };
 
     /**
@@ -164,6 +172,9 @@ public:
 
         using MeasurementFunction = std::function<MeasureVector(const StateVector&)>;
         using JacobianFunction = std::function<MatrixH(const StateVector&)>;
+        using DomainGateFunction = std::function<bool(const MeasureVector& z,
+                                                      const MeasureVector& y,
+                                                      const MeasureMatrix& S)>;
 
         SensorModel() = default;
         ~SensorModel() = default;
@@ -182,6 +193,15 @@ public:
         }
 
         double getMahalanobisThreshold() const { return mahalanobis_threshold_; }
+
+        bool domainGate(const MeasureVector& z, 
+                        const MeasureVector& y, 
+                        const MeasureMatrix& S) const {
+
+            if (!hasDomainGate()) return true;
+            
+            return domain_gate_(z, y, S);
+        }
 
         /**
          * @brief Updates H matrix.
@@ -219,6 +239,9 @@ public:
 
         void setMahalanobisThreshold(double threshold) {mahalanobis_threshold_ = threshold; }
 
+        void setDomainGate(const DomainGateFunction& func) { domain_gate_ = func; }
+        bool hasDomainGate() const { return static_cast<bool>(domain_gate_); }
+
     private:
         MatrixH H_{MatrixH::Zero()};
         MeasureMatrix R_{MeasureMatrix::Identity()};
@@ -230,6 +253,8 @@ public:
             std::vector<double>(MeasureDim, std::numeric_limits<double>::infinity())
         };
         double mahalanobis_threshold_{std::numeric_limits<double>::infinity()};
+
+        DomainGateFunction domain_gate_;
     };
 
     // =========================================================================
