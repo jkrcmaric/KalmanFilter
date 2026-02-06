@@ -9,9 +9,11 @@
 
 /**
  * @brief Information Filter (IF).
- * * The IF tracks the Information State (y, Y) instead of (x, P).
- * * Y = P^-1  (Information Matrix)
- * * y = Y * x (Information Vector)
+ * Implements the "Inverse Covariance" form of the Kalman Filter.
+ * * Tracks Information State: y (Information Vector) and Y (Information Matrix).
+ * * Relationship: Y = P^-1, y = Y * x.
+ * * Architecture: Hybrid IF. Predicts in Covariance space (for non-linearities), 
+ * Updates in Information space (for fast fusion).
  * * @tparam StateDim Fixed size of the state vector.
  */
 template <int StateDim>
@@ -24,55 +26,53 @@ public:
     using typename Base::StateMatrix;
     using typename Base::ProcessModel;
     
-    // Helper alias for generic Sensor Models
     template <int Dim> 
     using SensorModel = typename Base::template SensorModel<Dim>;
 
-    // Type for Information Space return values (i, I)
+    // Return type for contribution (i, I)
     using InformationPair = std::pair<StateVector, StateMatrix>;
 
     /**
      * @brief Constructor.
      * Initializes the filter in Information Space.
      * @param x Initial State Vector
-     * @param P Initial Covariance Matrix
+     * @param P Initial Covariance Matrix (Must be invertible/non-singular)
      */
     InformationFilter(const StateVector& x, const StateMatrix& P)
         : Base(x, P) {
         // Initialize Information Matrix (Y) and Vector (y)
-        // Note: If P is zero (perfect certainty), this inverse will fail. 
-        // IF requires some uncertainty to start usually, or Y initialized manually.
         Y_ = P.inverse();
         y_ = Y_ * this->x_;
     }
 
     /**
-     * @brief Fuses a measurement WITHOUT updating the covariance P.
-     * Use this when you have multiple different sensors to process in one step.
-     * 1. Call predict()
-     * 2. Call fuse(radar, z1)
-     * 3. Call fuse(lidar, z2)
-     * 4. Call updateState() <- Expensive Inversion happens ONCE here.
+     * @brief Fuses a single measurement WITHOUT updating the covariance P.
+     * * Lazy Update: Accumulates information (y+=i, Y+=I) but skips inversion (x=Y^-1*y).
+     * * Optimization: Only calculates LDLT for Mahalanobis gating if threshold is finite.
+     * * @return true if accepted, false if rejected by gate.
      */
     template <int MeasureDim>
     bool fuse(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
         using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
         using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
 
+        // 1. Linearize H at current state
         model.updateJacobian(this->x_);
 
+        // 2. Compute Innovation (for Gating)
         MeasureVector innovation = z - model.hx(this->x_);
         if (model.hasAngle()) {
             this->template normalizeAngles<MeasureDim>(innovation, model.getAngleFlags());
         }
 
-        // Compute Innovation Covariance S (Using Prior P_)
+        // 3. Compute Innovation Covariance S (Using Prior P_)
         MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
 
+        // 4. Perform Gating (Lazy Evaluation of LDLT)
         if (!gating(model, z, innovation, S)) return false;
 
+        // 5. Compute & Accumulate Information
         auto R_inv = model.R().inverse();
-        
         InformationPair contrib = getInformationContribution<MeasureDim>(innovation, model, R_inv);
 
         y_ += contrib.first;
@@ -83,11 +83,9 @@ public:
 
     /**
      * @brief Fuses a batch of measurements of the SAME type.
-     * * Optimized to compute R_inv only once.
-     * * Does NOT update (x, P). You must call updateState() later.
-     * * @tparam MeasureDim Dimension of the sensor
-     * @param model The sensor model (H, R)
-     * @param zs Vector of measurements
+     * * Optimization 1: Computes R^-1 only once.
+     * * Optimization 2: Computes S and S_ldlt only once for the whole batch.
+     * * @return int Number of measurements successfully fused (passed gating).
      */
     template <int MeasureDim>
     int fuseBatch(SensorModel<MeasureDim>& model, 
@@ -98,11 +96,11 @@ public:
         int fused_count{0};
         model.updateJacobian(this->x_);
         
-        // Cache Inverse of R once for the whole batch
+        // 1. Pre-compute shared matrices
         auto R_inv = model.R().inverse();
-
-        // Compute Innovation Covariance S (Using Prior P_)
         MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
+        
+        // 2. Conditional LDLT: Compute ONCE if Mahalanobis gating is active
         Eigen::LDLT<MeasureMatrix> S_ldlt;
         if (!std::isinf(model.getMahalanobisThreshold())) {
             S_ldlt.compute(S);
@@ -114,6 +112,7 @@ public:
                 this->template normalizeAngles<MeasureDim>(innovation, model.getAngleFlags());
             }
 
+            // 3. Gate using pre-computed decompositions
             if (!gating(model, z, innovation, S, S_ldlt)) continue;
                 
             ++fused_count;
@@ -127,7 +126,8 @@ public:
 
     /**
      * @brief Manually synchronizes P and x from Y and y.
-     * Call this once after fusing all sensors.
+     * Performs the expensive matrix inversion (P = Y^-1). 
+     * Call this once after a batch of fuse() calls.
      */
     void updateState() {
         syncState();
@@ -159,43 +159,42 @@ protected:
 
     /**
      * @brief Prediction Step.
-     * The IF prediction is expensive because Y cannot be propagated linearly.
-     * We convert to P, propagate P, and convert back to Y.
-     * (Hybrid Information Filter approach).
+     * Implementation: Hybrid Prediction.
+     * 1. Propagates P (Covariance) using standard non-linear EKF math.
+     * 2. Enforces constraints.
+     * 3. Inverts P -> Y (Expensive Step).
      */
     void computePrediction(ProcessModel& model) {
-
-        // Compute Jacobian F (if non-linear)
+        // 1. Linearize Dynamics
         model.updateJacobian(this->x_);
 
-        // Predict State: x = F * x (Linear) or fx(x) (Non-Linear)
+        // 2. Predict State (Non-Linear)
         this->x_ = model.fx(this->x_);
-
-        // Handle State Angle Wrapping
         if (model.hasAngle()) {
             this->template normalizeAngles<StateDim>(this->x_, model.getAngleFlags());
         }
 
-        // Predict Covariance: P = F * P * F' + Q
+        // 3. Predict Covariance
         this->P_ = model.F() * this->P_ * model.F().transpose() + model.Q();
 
+        // 4. Constraints
         model.enforceConstraints(this->x_);
 
-        // Update Information Space (The expensive part)
+        // 5. Update Information Space (Inversion)
         Y_ = this->P_.inverse();
         y_ = Y_ * this->x_;
     }
 
     /**
-     * @brief Update Step (Single Measurement).
-     * Computes contributions i and I, adds them, and syncs P.
+     * @brief Standard Update Step (Single Measurement).
+     * Wraps fuse() and immediately synchronizes state.
      */
     template <int MeasureDim>
     bool computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
         
         if (!fuse(model, z)) return false;
 
-        // Recover standard State (x, P)
+        // Recover standard State (x, P) immediately
         syncState();
 
         return true;
@@ -206,8 +205,10 @@ protected:
     // =========================================================================
 
     /**
-     * @brief Calculates the Information Contribution (i, I) for a measurement.
-     * Handles angle wrapping via Pseudo-Measurement logic.
+     * @brief Calculates the Information Contribution (i, I).
+     * Uses Pseudo-Measurement (zeta) to handle non-linearities/angles.
+     * i = H' R^-1 (z - h(x) + Hx)
+     * I = H' R^-1 H
      */
     template <int MeasureDim>
     InformationPair getInformationContribution(
@@ -217,20 +218,19 @@ protected:
     {
         using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
 
-        // Calculate Information Vector Contribution: i = H' * R^-1 * z
-        // Note: If non-linear or angles are involved, we cannot simply use z. 
-        // We must compute a "Pseudo-measurement" that accounts for the wrap.
-            
-        // Pseudo-Measurement (Linearized in the correct manifold)
+        // Pseudo-Measurement: zeta = innovation + Hx
         MeasureVector zeta = innovation + model.H() * this->x_;
             
-        // Compute 'i' using Pseudo-Measurement
         StateVector i = model.H().transpose() * R_inv * zeta;
         StateMatrix I = model.H().transpose() * R_inv * model.H();
 
         return {i, I};
     }
 
+    /**
+     * @brief Gating Helper (Lazy Computation).
+     * Computes LDLT only if Rectangular/Domain gates pass AND threshold is finite.
+     */
     template <int MeasureDim>
     bool gating(SensorModel<MeasureDim>& model,
                 const Eigen::Matrix<double, MeasureDim, 1>& z,
@@ -238,15 +238,21 @@ protected:
                 const Eigen::Matrix<double, MeasureDim, MeasureDim>& S) {
         using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
 
-        // Perform Gating
+        // 1. Fast Gates
         if (!this->rectangularGate(model, S, innovation)) return false;
         if (!model.domainGate(z, innovation, S)) return false;
 
+        // 2. Expensive Gate (Conditional)
         if (std::isinf(model.getMahalanobisThreshold())) return true;
-        Eigen::LDLT<MeasureMatrix> S_ldlt(S);
+        
+        Eigen::LDLT<MeasureMatrix> S_ldlt(S); // Compute decomposition here
         return this->mahalanobisGate(model, S_ldlt, innovation);
     }
 
+    /**
+     * @brief Gating Helper (Pre-Computed).
+     * Uses an existing LDLT decomposition (optimized for batch processing).
+     */
     template <int MeasureDim>
     bool gating(SensorModel<MeasureDim>& model,
                 const Eigen::Matrix<double, MeasureDim, 1>& z,
@@ -255,22 +261,19 @@ protected:
                 const Eigen::LDLT<Eigen::Matrix<double, MeasureDim, MeasureDim>>& S_ldlt) {
         using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
 
-        // Perform Gating
         if (!this->rectangularGate(model, S, innovation)) return false;
         if (!model.domainGate(z, innovation, S)) return false;
 
+        // Note: Base mahalanobisGate checks for isinf internally to avoid using S_ldlt if invalid
         return this->mahalanobisGate(model, S_ldlt, innovation);
     }
 
     /**
      * @brief Synchronize P and x from Y and y.
-     * Inverts the Information Matrix.
+     * Inverts the Information Matrix (Expensive O(N^3)).
      */
     void syncState() {
-        // P = Y^-1
         this->P_ = Y_.inverse();
-        
-        // x = P * y
         this->x_ = this->P_ * y_;
     }
 };
