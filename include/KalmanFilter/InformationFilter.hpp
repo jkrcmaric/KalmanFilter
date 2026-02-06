@@ -3,6 +3,7 @@
 
 #include <utility>
 #include <vector>
+#include <cmath>
 
 #include "KalmanFilter.hpp"
 
@@ -54,16 +55,30 @@ public:
      * 4. Call updateState() <- Expensive Inversion happens ONCE here.
      */
     template <int MeasureDim>
-    void fuse(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+    bool fuse(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
+        using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
+        using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
 
         model.updateJacobian(this->x_);
 
+        MeasureVector innovation = z - model.hx(this->x_);
+        if (model.hasAngle()) {
+            this->template normalizeAngles<MeasureDim>(innovation, model.getAngleFlags());
+        }
+
+        // Compute Innovation Covariance S (Using Prior P_)
+        MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
+
+        if (!gating(model, z, innovation, S)) return false;
+
         auto R_inv = model.R().inverse();
         
-        InformationPair contrib = getInformationContribution<MeasureDim>(z, model, R_inv);
+        InformationPair contrib = getInformationContribution<MeasureDim>(innovation, model, R_inv);
 
         y_ += contrib.first;
         Y_ += contrib.second;
+
+        return true;
     }
 
     /**
@@ -75,19 +90,39 @@ public:
      * @param zs Vector of measurements
      */
     template <int MeasureDim>
-    void fuseBatch(SensorModel<MeasureDim>& model, 
+    int fuseBatch(SensorModel<MeasureDim>& model, 
                      const std::vector<Eigen::Matrix<double, MeasureDim, 1>>& zs) {
+        using MeasureVector = Eigen::Matrix<double, MeasureDim, 1>;
+        using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
 
+        int fused_count{0};
         model.updateJacobian(this->x_);
         
         // Cache Inverse of R once for the whole batch
         auto R_inv = model.R().inverse();
 
+        // Compute Innovation Covariance S (Using Prior P_)
+        MeasureMatrix S = model.H() * this->P_ * model.H().transpose() + model.R();
+        Eigen::LDLT<MeasureMatrix> S_ldlt;
+        if (!std::isinf(model.getMahalanobisThreshold())) {
+            S_ldlt.compute(S);
+        }
+
         for (const auto& z : zs) {
-            InformationPair contrib = getInformationContribution<MeasureDim>(z, model, R_inv);
+            MeasureVector innovation = z - model.hx(this->x_);
+            if (model.hasAngle()) {
+                this->template normalizeAngles<MeasureDim>(innovation, model.getAngleFlags());
+            }
+
+            if (!gating(model, z, innovation, S, S_ldlt)) continue;
+                
+            ++fused_count;
+            InformationPair contrib = getInformationContribution<MeasureDim>(innovation, model, R_inv);
             y_ += contrib.first;
             Y_ += contrib.second;
         }
+
+        return fused_count;
     }
 
     /**
@@ -144,6 +179,8 @@ protected:
         // Predict Covariance: P = F * P * F' + Q
         this->P_ = model.F() * this->P_ * model.F().transpose() + model.Q();
 
+        model.enforceConstraints(this->x_);
+
         // Update Information Space (The expensive part)
         Y_ = this->P_.inverse();
         y_ = Y_ * this->x_;
@@ -154,23 +191,14 @@ protected:
      * Computes contributions i and I, adds them, and syncs P.
      */
     template <int MeasureDim>
-    void computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
-
-        // Compute Jacobian H (if non-linear)
-        model.updateJacobian(this->x_);
+    bool computeUpdate(SensorModel<MeasureDim>& model, const Eigen::Matrix<double, MeasureDim, 1>& z) {
         
-        // Calculate R_inv locally
-        auto R_inv = model.R().inverse();
-
-        // Get Contribution
-        InformationPair contrib = getInformationContribution<MeasureDim>(z, model, R_inv);
-
-        // Accumulate Information
-        y_ += contrib.first;
-        Y_ += contrib.second;
+        if (!fuse(model, z)) return false;
 
         // Recover standard State (x, P)
         syncState();
+
+        return true;
     }
 
     // =========================================================================
@@ -183,7 +211,7 @@ protected:
      */
     template <int MeasureDim>
     InformationPair getInformationContribution(
-        const Eigen::Matrix<double, MeasureDim, 1>& z,
+        const Eigen::Matrix<double, MeasureDim, 1>& innovation,
         const SensorModel<MeasureDim>& model,
         const Eigen::Matrix<double, MeasureDim, MeasureDim>& R_inv) 
     {
@@ -192,25 +220,46 @@ protected:
         // Calculate Information Vector Contribution: i = H' * R^-1 * z
         // Note: If non-linear or angles are involved, we cannot simply use z. 
         // We must compute a "Pseudo-measurement" that accounts for the wrap.
-        
-        // 1. Expected measurement
-        MeasureVector hx = model.hx(this->x_);
-
-        MeasureVector innovation = z - hx;
             
-        // 2. Innovation with wrapping
-         if (model.hasAngle()) {
-            this->template normalizeAngles<MeasureDim>(innovation, model.getAngleFlags());
-         }
-            
-        // 3. Pseudo-Measurement (Linearized in the correct manifold)
+        // Pseudo-Measurement (Linearized in the correct manifold)
         MeasureVector zeta = innovation + model.H() * this->x_;
             
-        // 4. Compute 'i' using Pseudo-Measurement
+        // Compute 'i' using Pseudo-Measurement
         StateVector i = model.H().transpose() * R_inv * zeta;
         StateMatrix I = model.H().transpose() * R_inv * model.H();
 
         return {i, I};
+    }
+
+    template <int MeasureDim>
+    bool gating(SensorModel<MeasureDim>& model,
+                const Eigen::Matrix<double, MeasureDim, 1>& z,
+                const Eigen::Matrix<double, MeasureDim, 1>& innovation,
+                const Eigen::Matrix<double, MeasureDim, MeasureDim>& S) {
+        using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
+
+        // Perform Gating
+        if (!this->rectangularGate(model, S, innovation)) return false;
+        if (!model.domainGate(z, innovation, S)) return false;
+
+        if (std::isinf(model.getMahalanobisThreshold())) return true;
+        Eigen::LDLT<MeasureMatrix> S_ldlt(S);
+        return this->mahalanobisGate(model, S_ldlt, innovation);
+    }
+
+    template <int MeasureDim>
+    bool gating(SensorModel<MeasureDim>& model,
+                const Eigen::Matrix<double, MeasureDim, 1>& z,
+                const Eigen::Matrix<double, MeasureDim, 1>& innovation,
+                const Eigen::Matrix<double, MeasureDim, MeasureDim>& S,
+                const Eigen::LDLT<Eigen::Matrix<double, MeasureDim, MeasureDim>>& S_ldlt) {
+        using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
+
+        // Perform Gating
+        if (!this->rectangularGate(model, S, innovation)) return false;
+        if (!model.domainGate(z, innovation, S)) return false;
+
+        return this->mahalanobisGate(model, S_ldlt, innovation);
     }
 
     /**
