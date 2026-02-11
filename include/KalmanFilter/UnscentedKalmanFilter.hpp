@@ -59,12 +59,13 @@ public:
          * @param P Current state covariance matrix.
          */
         void calculateSigmaPoints(const StateVector& x, const StateMatrix& P) {
-            Eigen::LLT<StateMatrix> L((n_ + lambda_) * P);
+            Eigen::LLT<StateMatrix> L_llt((n_ + lambda_) * P);
+            StateMatrix L = L_llt.matrixL();
 
             sigmas_.col(0) = x;
             for (size_t i = 0; i < n_; ++i) {
-                sigmas_.col(i+1) = x + L.matrixL().col(i);
-                sigmas_.col(n_+i+1) = x - L.matrixL().col(i);
+                sigmas_.col(i+1) = x + L.col(i);
+                sigmas_.col(n_+i+1) = x - L.col(i);
             }
         }
 
@@ -74,7 +75,7 @@ public:
         double getCovarianceWeights(int i) const { return Wc_(i); }
 
     private:
-        const int n_{StateDim};
+        int n_{StateDim};
         double lambda_;
 
         WeightVector Wm_;
