@@ -95,7 +95,7 @@ int main() {
 
     // A. Transition Function (Non-Linear or Linear Kinematics)
     // x_next = x + x_dot * dt
-    process_model.setTransitionFunction([](const StateVector& x) {
+    process_model.setTransitionFunction([](auto x) {
         StateVector x_next = x;
         x_next(0) += x(3) * DT; // Range
         x_next(1) += x(4) * DT; // Azimuth
@@ -104,7 +104,7 @@ int main() {
     });
 
     // B. Analytical Jacobian (Optional - for performance)
-    process_model.setAnalyticalJacobianF([](const StateVector& x) {
+    process_model.setAnalyticalJacobianF([](auto x) {
         EKF::StateMatrix F = EKF::StateMatrix::Identity();
         F(0,3) = DT; 
         F(1,4) = DT; 
@@ -127,14 +127,14 @@ int main() {
 
     // A. Measurement Function
     // We measure [r, az, el] directly from state
-    radar_model.setMeasurementFunction([](const StateVector& x) {
+    radar_model.setMeasurementFunction([](auto x) {
         MeasureVector z;
         z << x(0), x(1), x(2); 
         return z;
     });
 
     // B. Analytical Jacobian H
-    radar_model.setAnalyticalJacobianH([](const StateVector& x) {
+    radar_model.setAnalyticalJacobianH([](auto x) {
         RadarSensor::MatrixH H = RadarSensor::MatrixH::Zero();
         H(0,0) = 1.0; 
         H(1,1) = 1.0; 

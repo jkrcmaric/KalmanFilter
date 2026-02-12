@@ -90,7 +90,7 @@ int main() {
     // 1. Process Model (Kinematics)
     // =========================================================================
     EIF::ProcessModel process;
-    process.setTransitionFunction([](const StateVector& x) {
+    process.setTransitionFunction([](auto x) {
         StateVector next = x;
         next(0) += x(3) * DT; next(1) += x(4) * DT; next(2) += x(5) * DT;
         return next;
@@ -105,12 +105,12 @@ int main() {
     // 2. Radar Model (3D, Noisy Angles)
     // =========================================================================
     RadarModel radar;
-    radar.setMeasurementFunction([](const StateVector& x) {
+    radar.setMeasurementFunction([](auto x) {
         return x.head(3); // Returns [r, az, el]
     });
     
     // Analytical Jacobian for Radar (3x6)
-    radar.setAnalyticalJacobianH([](const StateVector& x) {
+    radar.setAnalyticalJacobianH([](auto x) {
         RadarModel::MatrixH H = RadarModel::MatrixH::Zero();
         H(0,0)=1; H(1,1)=1; H(2,2)=1;
         return H;
@@ -128,14 +128,14 @@ int main() {
     // 3. Optical Model (2D, Precise Angles)
     // =========================================================================
     OpticalModel optical;
-    optical.setMeasurementFunction([](const StateVector& x) {
+    optical.setMeasurementFunction([](auto x) {
         OpticalModel::MeasureVector z;
         z << x(1), x(2); // Returns [az, el] only!
         return z;
     });
 
     // Analytical Jacobian for Optical (2x6)
-    optical.setAnalyticalJacobianH([](const StateVector& x) {
+    optical.setAnalyticalJacobianH([](auto x) {
         OpticalModel::MatrixH H = OpticalModel::MatrixH::Zero();
         H(0,1)=1; // az maps to state index 1
         H(1,2)=1; // el maps to state index 2

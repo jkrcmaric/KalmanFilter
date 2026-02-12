@@ -71,7 +71,7 @@ public:
 
         // Helper: Central Difference Numerical Jacobian
         template <typename MatrixType, typename VectorType, typename Func>
-        void computeNumericalJacobian(const StateVector& x, MatrixType& J, const Func& func) {
+        void computeNumericalJacobian(const Eigen::Ref<const StateVector> x, MatrixType& J, const Func& func) {
             StateVector x_temp{x};
             VectorType y_plus, y_minus;
 
@@ -95,9 +95,9 @@ public:
      */
     class ProcessModel : public SystemModel<StateDim> {
     public:
-        using TransitionFunction = std::function<StateVector(const StateVector&)>;
-        using JacobianFunction = std::function<StateMatrix(const StateVector&)>;
-        using ConstraintFunction = std::function<void(StateVector&)>;
+        using TransitionFunction = std::function<StateVector(const Eigen::Ref<const StateVector>)>;
+        using JacobianFunction = std::function<StateMatrix(const Eigen::Ref<const StateVector>)>;
+        using ConstraintFunction = std::function<void(Eigen::Ref<StateVector>)>;
 
         ProcessModel() = default;
         ~ProcessModel() = default;
@@ -106,13 +106,13 @@ public:
         const StateMatrix& Q() const { return Q_; }
 
         // Returns f(x) if non-linear function set, else F*x
-        StateVector fx(const StateVector& x) const { 
+        StateVector fx(const Eigen::Ref<const StateVector> x) const { 
             if (fx_) return fx_(x); 
             return F_ * x; 
         }
 
         // Apply physical constraints (clamping/projection) to state x
-        void enforceConstraints(StateVector& x) const {
+        void enforceConstraints(Eigen::Ref<StateVector> x) const {
             if (constraint_function_) constraint_function_(x);
         }
 
@@ -120,7 +120,7 @@ public:
          * @brief Recomputes F based on current state.
          * Uses analytical Jacobian if provided, otherwise Numerical differentiation.
          */
-        void updateJacobian(const StateVector& x) {
+        void updateJacobian(const Eigen::Ref<const StateVector> x) {
             if (!fx_) return; // Linear model, F is constant
 
             if (jacob_f_) {
@@ -158,8 +158,8 @@ public:
         using MeasureMatrix = Eigen::Matrix<double, MeasureDim, MeasureDim>;
         using MatrixH = Eigen::Matrix<double, MeasureDim, StateDim>;
 
-        using MeasurementFunction = std::function<MeasureVector(const StateVector&)>;
-        using JacobianFunction = std::function<MatrixH(const StateVector&)>;
+        using MeasurementFunction = std::function<MeasureVector(const Eigen::Ref<const StateVector>)>;
+        using JacobianFunction = std::function<MatrixH(const Eigen::Ref<const StateVector>)>;
         using DomainGateFunction = std::function<bool(const MeasureVector& z,
                                                       const MeasureVector& y,
                                                       const MeasureMatrix& S)>;
@@ -171,7 +171,7 @@ public:
         const MeasureMatrix& R() const { return R_; }
 
         // Returns h(x) if non-linear function set, else H*x
-        MeasureVector hx(const StateVector& x) const { 
+        MeasureVector hx(const Eigen::Ref<const StateVector> x) const { 
             if (hx_) return hx_(x); 
             return H_ * x; 
         }
@@ -188,7 +188,7 @@ public:
         }
 
         // Recomputes H based on current state (Analytical or Numerical)
-        void updateJacobian(const StateVector& x) {
+        void updateJacobian(const Eigen::Ref<const StateVector> x) {
             if (!hx_) return; // Linear model, H is constant
 
             if (jacob_h_) {
@@ -280,7 +280,7 @@ protected:
      * Only applies to dimensions flagged via setAsAngle().
      */
     template <int Dim>
-    void normalizeAngles(Eigen::Matrix<double, Dim, 1>& y, const std::vector<int>& angle_flag) {
+    void normalizeAngles(Eigen::Ref<Eigen::Matrix<double, Dim, 1>> y, const std::vector<int>& angle_flag) {
         assert(static_cast<size_t>(y.size()) == angle_flag.size() && "Angle flag dimension mismatch");
         
         for (size_t i = 0; i < angle_flag.size(); ++i) {
